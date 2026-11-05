@@ -1,0 +1,28 @@
+{
+  "name": "artemis",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "node --test test_calculations.test.js tests/calculation.test.js tests/ai_agent.test.js",
+    "agent": "node server/server.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.118.0",
+    "@tailwindcss/vite": "^4.3.3",
+    "@vitejs/plugin-react": "^4.5.2",
+    "cors": "^2.8.6",
+    "express": "^5.3.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-router-dom": "^7.18.4",
+    "tailwindcss": "^4.3.3",
+    "uuid": "^14.0.3"
+  },
+  "devDependencies": {
+    "vite": "^8.3.4"
+  }
+}
