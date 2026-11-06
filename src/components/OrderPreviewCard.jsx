@@ -1,4 +1,5 @@
 import React from 'react';
+import { formatDate } from '../store';
 
 const formatVND = (amount) => {
   return new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(amount || 0);
@@ -208,6 +209,54 @@ export default function OrderPreviewCard({ card, onConfirm, onCancel, isProcessi
   }
 
   if (type === 'WEB_ACTION_CARD') {
+    if (card.tx) {
+      const isSale = card.tx.type === 'SALE';
+      return (
+        <div
+          className={`mt-2 p-3 ${
+            isSale ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-100' : 'bg-amber-950/60 border-amber-500/40 text-amber-100'
+          } border rounded-xl text-xs shadow-lg`}
+        >
+          <div className="flex items-center justify-between border-b border-white/10 pb-1.5 mb-2">
+            <span className={`font-bold flex items-center gap-1.5 ${isSale ? 'text-emerald-400' : 'text-amber-400'}`}>
+              <span>{isSale ? '🛒' : '💸'}</span> {isSale ? 'Đã ghi nhận đơn bán hàng' : 'Đã ghi nhận khoản chi'}
+            </span>
+            <span className="px-2 py-0.5 bg-white/10 rounded text-[10px] font-mono">{card.tx.id}</span>
+          </div>
+          <div className="space-y-1 text-slate-300">
+            <p>
+              <span className="text-slate-400">Món:</span> <strong className="text-white">{card.tx.item_name}</strong>
+            </p>
+            <p>
+              <span className="text-slate-400">Số tiền:</span>{' '}
+              <strong className="text-amber-300 text-sm">{formatVND(card.tx.sale_price || card.tx.amount)}</strong>
+            </p>
+            {card.tx.customer_name && card.tx.customer_name !== 'Khách lẻ' && (
+              <p>
+                <span className="text-slate-400">Khách:</span>{' '}
+                <span className="text-white font-medium">{card.tx.customer_name}</span>
+              </p>
+            )}
+            <p>
+              <span className="text-slate-400">Thanh toán:</span>{' '}
+              <span className="text-emerald-300 font-medium">
+                {card.tx.payment_method === 'DEBT'
+                  ? 'Ghi nợ'
+                  : card.tx.payment_method === 'COD'
+                  ? 'Ship COD'
+                  : 'Tiền mặt / Chuyển khoản'}
+              </span>
+            </p>
+            {card.tx.created_at && (
+              <p>
+                <span className="text-slate-400">Thời gian:</span>{' '}
+                <span className="text-slate-300 font-mono text-[11px]">{formatDate(card.tx.created_at)}</span>
+              </p>
+            )}
+          </div>
+        </div>
+      );
+    }
     return null;
   }
 

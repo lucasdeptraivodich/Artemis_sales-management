@@ -76,6 +76,8 @@ export async function executeToolCall(toolName, args) {
         success: true,
         requiresConfirmation: Boolean(res.requiresConfirmation),
         cardType: res.cardType || 'WEB_ACTION_CARD',
+        tx: res.tx || null,
+        item: res.item || null,
         uiAction: res.uiAction || null,
         message: res.message
       };
@@ -98,15 +100,14 @@ function sanitizeSchemaForGemini(schema) {
 }
 
 /**
- * Hỗ trợ nâng cấp lên Gemini 3.8 Flash / Gemini 2.5 Flash kèm cơ chế Auto-Fallback thông minh
+ * Hỗ trợ các Model Google Gemini chính thức kèm cơ chế Auto-Fallback thông minh
  */
 function buildGeminiModelCandidates(requestedModel) {
   const candidates = [];
-  if (requestedModel) {
-    // Nếu người dùng chọn gemini-3.8-flash, thử model đó trước rồi tự động chuyển tiếp sang gemini-2.5-flash & gemini-2.0-flash
+  if (requestedModel && !requestedModel.includes('3.8') && !requestedModel.includes('2.5')) {
     candidates.push(requestedModel);
   }
-  for (const fallback of ['gemini-2.5-flash', 'gemini-2.0-flash']) {
+  for (const fallback of ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro']) {
     if (!candidates.includes(fallback)) {
       candidates.push(fallback);
     }
@@ -114,7 +115,7 @@ function buildGeminiModelCandidates(requestedModel) {
   return candidates;
 }
 
-async function callGemini(messages, apiKey, modelName = 'gemini-3.8-flash') {
+async function callGemini(messages, apiKey, modelName = 'gemini-2.0-flash') {
   const contents = messages
     .filter((m) => m.role !== 'system')
     .map((m) => ({
@@ -162,23 +163,31 @@ async function callGemini(messages, apiKey, modelName = 'gemini-3.8-flash') {
   return null;
 }
 
-async function callOpenAi(messages, apiKey) {
+async function callOpenAi(messages, apiKey, baseUrl = null, modelName = 'gpt-4o-mini') {
   try {
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    const endpoint = baseUrl
+      ? `${baseUrl.replace(/\/+$/, '')}/chat/completions`
+      : 'https://api.openai.com/v1/chat/completions';
+
+    const res = await fetch(endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`
+        Authorization: `Bearer ${apiKey || 'proxy-key'}`
       },
       body: JSON.stringify({
-        model: 'gpt-4o-mini',
+        model: modelName || 'gpt-4o-mini',
         messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages],
         tools: ORDER_TOOLS,
         tool_choice: 'auto',
         temperature: 0.2
       })
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      console.warn(`OpenAI / Custom Base API error (${res.status}):`, errText);
+      return null;
+    }
     const data = await res.json();
     const msg = data.choices?.[0]?.message;
     if (msg?.tool_calls?.length > 0) {
@@ -190,12 +199,12 @@ async function callOpenAi(messages, apiKey) {
     }
     if (msg?.content) return { textOnly: msg.content };
   } catch (err) {
-    console.warn('OpenAI error:', err.message);
+    console.warn('OpenAI / Custom Base API error:', err.message);
   }
   return null;
 }
 
-export async function processAgentMessage({ messages, sessionState = {}, apiKey = null, model = null }) {
+export async function processAgentMessage({ messages, sessionState = {}, apiKey = null, model = null, baseUrl = null }) {
   if (!Array.isArray(messages) || messages.length === 0) {
     throw new Error('Danh sách messages không hợp lệ.');
   }
@@ -255,7 +264,7 @@ export async function processAgentMessage({ messages, sessionState = {}, apiKey 
     };
   }
 
-  // 2. Tool Calling (Local Deterministic Matcher ưu tiên cho các tác vụ rõ ràng, hoặc Gemini/OpenAI)
+  // 2. Tool Calling (Ưu tiên gọi LLM qua 9Router/OpenAI/Gemini nếu có cấu hình, fallback sang Deterministic Matcher)
   const localMatch = simulateLlmToolCalling(userText);
   let toolCall = null;
 
@@ -265,10 +274,23 @@ export async function processAgentMessage({ messages, sessionState = {}, apiKey 
     sessionState.pendingActionId = null;
   }
 
+  // 2A. Nếu có cấu hình Custom API Base URL (9Router / Local Proxy / OpenRouter)
+  if (baseUrl) {
+    const customRes = await callOpenAi(messages, apiKey, baseUrl, model);
+    if (customRes?.name) {
+      toolCall = customRes;
+    } else if (customRes?.textOnly) {
+      return { reply: customRes.textOnly, card: null, sessionState };
+    }
+  }
+
+  // 2B. Nếu có Gemini API Key trực tiếp
   const geminiKey =
-    (typeof process !== 'undefined' && (process?.env?.GEMINI_API_KEY || process?.env?.GOOGLE_API_KEY)) ||
-    (typeof import.meta !== 'undefined' && (import.meta?.env?.VITE_GEMINI_API_KEY || import.meta?.env?.VITE_GOOGLE_API_KEY)) ||
-    (apiKey?.startsWith('AIza') ? apiKey : null);
+    (!baseUrl &&
+      ((typeof process !== 'undefined' && (process?.env?.GEMINI_API_KEY || process?.env?.GOOGLE_API_KEY)) ||
+        (typeof import.meta !== 'undefined' && (import.meta?.env?.VITE_GEMINI_API_KEY || import.meta?.env?.VITE_GOOGLE_API_KEY)) ||
+        (apiKey?.startsWith('AIza') ? apiKey : null))) ||
+    null;
 
   const geminiModel =
     model ||
@@ -276,35 +298,33 @@ export async function processAgentMessage({ messages, sessionState = {}, apiKey 
     (typeof import.meta !== 'undefined' && import.meta?.env?.VITE_GEMINI_MODEL) ||
     'gemini-2.0-flash';
 
-  if (geminiKey) {
+  if (!toolCall && geminiKey) {
     const geminiRes = await callGemini(messages, geminiKey, geminiModel);
     if (geminiRes?.name) {
       toolCall = geminiRes;
-    } else if (localMatch) {
-      toolCall = localMatch;
     } else if (geminiRes?.textOnly) {
       return { reply: geminiRes.textOnly, card: null, sessionState };
     }
   }
 
-  if (!toolCall) {
+  // 2C. Nếu có OpenAI API Key trực tiếp
+  if (!toolCall && !baseUrl) {
     const openAiKey =
       apiKey ||
       (typeof process !== 'undefined' && process?.env?.OPENAI_API_KEY) ||
       (typeof import.meta !== 'undefined' && import.meta?.env?.VITE_OPENAI_API_KEY) ||
       null;
     if (openAiKey && !openAiKey.startsWith('AIza')) {
-      const openAiRes = await callOpenAi(messages, openAiKey);
+      const openAiRes = await callOpenAi(messages, openAiKey, null, model);
       if (openAiRes?.name) {
         toolCall = openAiRes;
-      } else if (localMatch) {
-        toolCall = localMatch;
       } else if (openAiRes?.textOnly) {
         return { reply: openAiRes.textOnly, card: null, sessionState };
       }
     }
   }
 
+  // 2D. Dự phòng ngầm (Offline / Deterministic Fallback)
   if (!toolCall) {
     toolCall = localMatch;
   }
@@ -337,6 +357,8 @@ export async function processAgentMessage({ messages, sessionState = {}, apiKey 
         card: {
           type: toolResult.cardType,
           order: toolResult.order,
+          tx: toolResult.tx || null,
+          item: toolResult.item || null,
           uiAction: toolResult.uiAction || null
         },
         uiAction: toolResult.uiAction || null,
@@ -355,7 +377,12 @@ export async function processAgentMessage({ messages, sessionState = {}, apiKey 
 
   return {
     reply:
-      'Chào anh/chị! Em là Trợ lý Toàn Năng Artemis. Em có thể giúp: Xóa hết nợ / Thu nợ, Xóa hàng loạt đơn theo tháng, Ghi bán hàng, Ghi chi phí, Quản lý kho, hoặc Mở bất kỳ mục nào trên web. Anh/chị cần em làm gì ạ?',
+      'Em chưa hiểu rõ câu lệnh này. Anh/chị có thể nhập mẫu như sau:\n' +
+      '• Ghi bán hàng: "Ghi bán trang sức 6 triệu" hoặc "Đã bán 2 áo 300k"\n' +
+      '• Ghi chi tiền: "Ghi chi tiền điện 500k"\n' +
+      '• Quản lý nợ: "Xóa hết nợ tháng 11", "Mở sổ nợ"\n' +
+      '• Điều hướng: "Mở dòng tiền", "Xem báo cáo"\n' +
+      '(💡 Mẹo: Bấm biểu tượng bánh răng ⚙️ góc trên để cài đặt API Key nếu muốn trò chuyện tự nhiên hơn nhé!)',
     card: null,
     actionRequired: false,
     sessionState

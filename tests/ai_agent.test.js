@@ -16,7 +16,7 @@ if (typeof globalThis.localStorage === 'undefined') {
 
 import { ecommerceDb, ORDER_STATUS, STATUS_LABELS } from '../src/agent/ecommerceDb.js';
 import { executeToolCall, processAgentMessage } from '../src/agent/aiAgentEngine.js';
-import { addCustomer, getDebtSummary } from '../src/store.js';
+import { addCustomer, getDebtSummary, getTransactions } from '../src/store.js';
 
 describe('🏹 AI AGENT E-COMMERCE CORE & SAFETY RULES', () => {
   beforeEach(() => {
@@ -255,6 +255,47 @@ describe('🏹 AI AGENT E-COMMERCE CORE & SAFETY RULES', () => {
       assert.match(expRes.reply, /Đã ghi nhận khoản chi/);
     });
 
+    test('Khách gõ prompt bán hàng: "ghi bán hàng:hôm nay đã bán một đơn trang sức trị giá 6 triệu" -> Ghi đơn thành công lên Dashboard', async () => {
+      const res = await processAgentMessage({
+        messages: [{ role: 'user', content: 'ghi bán hàng:hôm nay đã bán một đơn trang sức trị giá 6 triệu' }],
+        sessionState: {}
+      });
+
+      assert.strictEqual(res.actionRequired, false);
+      assert.strictEqual(res.card.type, 'WEB_ACTION_CARD');
+      assert.ok(res.card.tx);
+      assert.strictEqual(res.card.tx.type, 'SALE');
+      assert.strictEqual(res.card.tx.sale_price, 6000000);
+      assert.strictEqual(res.card.tx.item_name, 'Trang sức');
+      assert.match(res.reply, /Đã ghi đơn bán/);
+      assert.match(res.reply, /6\.000\.000/);
+    });
+
+    test('Khách gõ bán hàng ngắn gọn: "đã bán 2 áo thun 300k" -> Tự bóc tách số lượng 2 và món Áo thun', async () => {
+      const res = await processAgentMessage({
+        messages: [{ role: 'user', content: 'đã bán 2 áo thun 300k' }],
+        sessionState: {}
+      });
+
+      assert.strictEqual(res.actionRequired, false);
+      assert.strictEqual(res.card.type, 'WEB_ACTION_CARD');
+      assert.ok(res.card.tx);
+      assert.strictEqual(res.card.tx.sale_price, 300000);
+      assert.strictEqual(res.card.tx.quantity, 2);
+      assert.strictEqual(res.card.tx.item_name, 'Áo thun');
+    });
+
+    test('Khách nhập câu không hiểu -> AI trả lời hướng dẫn cú pháp thân thiện, không lặp lại câu chào ban đầu', async () => {
+      const res = await processAgentMessage({
+        messages: [{ role: 'user', content: 'alo có ai ở đây không ta' }],
+        sessionState: {}
+      });
+
+      assert.match(res.reply, /Em chưa hiểu rõ câu lệnh này/);
+      assert.match(res.reply, /Ghi bán hàng/);
+      assert.doesNotMatch(res.reply, /^Chào anh\/chị! Em là Trợ lý Toàn Năng/);
+    });
+
 
     test('Khách yêu cầu đặt hàng -> AI tạo bản nháp -> Khách gõ "Xác nhận" -> Đơn được tạo', async () => {
       let sessionState = {};
@@ -283,6 +324,136 @@ describe('🏹 AI AGENT E-COMMERCE CORE & SAFETY RULES', () => {
       assert.match(turn2.reply, /thành công/);
       assert.strictEqual(turn2.card.type, 'ACTION_CONFIRMED_CARD');
       assert.strictEqual(turn2.sessionState.pendingActionId, null);
+    });
+  });
+
+  describe('4. Công nợ thông minh, Chuyển đơn sang nợ & Nhận diện ngày tháng', () => {
+    test('User ghi đơn bán 6tr bằng tiền mặt -> Sau đó nhắn "thêm vào là nó nợ" -> AI chuyển đơn sang Nợ và cập nhật Sổ Nợ', async () => {
+      // Step 1: Ghi đơn bán ban đầu
+      const saleRes = await processAgentMessage({
+        messages: [{ role: 'user', content: 'ghi bán hàng:hôm nay đã bán một đơn trang sức trị giá 6 triệu' }],
+        sessionState: {}
+      });
+      assert.strictEqual(saleRes.card.tx.sale_price, 6000000);
+      assert.strictEqual(saleRes.card.tx.payment_method, 'CASH_TRANSFER');
+
+      // Sổ nợ lúc này chưa có nợ từ đơn này
+      const initialDebt = getDebtSummary().totalDebt;
+
+      // Step 2: Khách bảo "thêm vào là nó nợ"
+      const convertRes = await processAgentMessage({
+        messages: [{ role: 'user', content: 'thêm vào là nó nợ' }],
+        sessionState: {}
+      });
+
+      assert.strictEqual(convertRes.card.type, 'WEB_ACTION_CARD');
+      assert.strictEqual(convertRes.card.tx.payment_method, 'DEBT');
+      assert.strictEqual(convertRes.card.tx.sale_price, 6000000);
+      assert.match(convertRes.reply, /Đã chuyển đơn bán.*sang hình thức Ghi Nợ/);
+
+      // Sổ nợ đã tăng đúng 6.000.000đ
+      assert.strictEqual(getDebtSummary().totalDebt, initialDebt + 6000000);
+    });
+
+    test('User nhắn "chuyển đơn 6 triệu sang nợ, đức nợ 6 triệu" -> AI cập nhật đúng khách Đức và công nợ 6tr', async () => {
+      // Step 1: Ghi đơn bán tiền mặt
+      await processAgentMessage({
+        messages: [{ role: 'user', content: 'đã bán món quà lưu niệm 6 triệu' }],
+        sessionState: {}
+      });
+
+      // Step 2: Yêu cầu chuyển sang nợ cho Đức
+      const res = await processAgentMessage({
+        messages: [{ role: 'user', content: 'chuyển đơn 6 triệu sang nợ, đức nợ 6 triệu' }],
+        sessionState: {}
+      });
+
+      assert.strictEqual(res.card.tx.payment_method, 'DEBT');
+      assert.strictEqual(res.card.tx.customer_name, 'Đức');
+      assert.match(res.reply, /Đức/);
+      assert.match(res.reply, /6\.000\.000/);
+
+      const summary = getDebtSummary('Đức');
+      assert.ok(summary.totalDebt >= 6000000);
+    });
+
+    test('User gõ trực tiếp "đức nợ 6 triệu" -> AI tự động ghi nợ cho khách Đức 6tr vào Sổ Nợ', async () => {
+      const res = await processAgentMessage({
+        messages: [{ role: 'user', content: 'đức nợ 6 triệu' }],
+        sessionState: {}
+      });
+
+      assert.strictEqual(res.card.tx.payment_method, 'DEBT');
+      assert.strictEqual(res.card.tx.customer_name, 'Đức');
+      assert.strictEqual(res.card.tx.sale_price, 6000000);
+      assert.match(res.reply, /Đã ghi nhận đơn nợ/);
+    });
+
+    test('User nói ngày trong quá khứ ("ngày hôm qua", "hôm qua") -> AI nhận diện đúng thời gian created_at', async () => {
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+
+      // Bán hàng ngày hôm qua
+      const saleRes = await processAgentMessage({
+        messages: [{ role: 'user', content: 'bán trang sức 6tr ngày hôm qua cho Đức' }],
+        sessionState: {}
+      });
+
+      assert.strictEqual(saleRes.card.tx.customer_name, 'Đức');
+      assert.strictEqual(saleRes.card.tx.item_name, 'Trang sức');
+      assert.ok(saleRes.card.tx.created_at);
+      const saleDate = new Date(saleRes.card.tx.created_at);
+      assert.strictEqual(saleDate.getDate(), yesterday.getDate());
+
+      // Ghi chi ngày hôm qua
+      const expRes = await processAgentMessage({
+        messages: [{ role: 'user', content: 'ghi chi 300k tiền điện hôm qua' }],
+        sessionState: {}
+      });
+
+      assert.strictEqual(expRes.card.tx.item_name, 'Tiền điện');
+      assert.strictEqual(expRes.card.tx.sale_price, 300000);
+      assert.ok(expRes.card.tx.created_at);
+      const expDate = new Date(expRes.card.tx.created_at);
+      assert.strictEqual(expDate.getDate(), yesterday.getDate());
+    });
+
+    test('User nói ngày cụ thể "ghi nợ đức 6 triệu ngày 2/11" -> AI nhận diện đúng ngày 02/11', async () => {
+      const res = await processAgentMessage({
+        messages: [{ role: 'user', content: 'ghi nợ đức 6 triệu ngày 2/11' }],
+        sessionState: {}
+      });
+
+      assert.strictEqual(res.card.tx.payment_method, 'DEBT');
+      assert.strictEqual(res.card.tx.customer_name, 'Đức');
+      assert.ok(res.card.tx.created_at);
+      const d = new Date(res.card.tx.created_at);
+      assert.strictEqual(d.getDate(), 2);
+      assert.strictEqual(d.getMonth(), 10); // Tháng 11 = index 10
+    });
+
+    test('User ghi nhận theo Thứ ("thứ 2 bán trang sức 6tr", "ghi chi 300k tiền điện thứ 2") và hỏi "thứ 2 bán được những gì chi tiêu những gì" -> AI trả lời đúng chi tiết Thứ Hai', async () => {
+      const saleRes = await processAgentMessage({
+        messages: [{ role: 'user', content: 'thứ 2 bán trang sức 6tr' }],
+        sessionState: {}
+      });
+      assert.strictEqual(saleRes.card.tx.item_name, 'Trang sức');
+      assert.strictEqual(new Date(saleRes.card.tx.created_at).getDay(), 1); // Thứ 2 = 1
+
+      const expRes = await processAgentMessage({
+        messages: [{ role: 'user', content: 'ghi chi 300k tiền điện thứ 2' }],
+        sessionState: {}
+      });
+      assert.strictEqual(expRes.card.tx.item_name, 'Tiền điện');
+      assert.strictEqual(new Date(expRes.card.tx.created_at).getDay(), 1);
+
+      const queryRes = await processAgentMessage({
+        messages: [{ role: 'user', content: 'thứ 2 bán được những gì chi tiêu những gì' }],
+        sessionState: {}
+      });
+      assert.match(queryRes.reply, /Thứ Hai/);
+      assert.match(queryRes.reply, /Trang sức/);
+      assert.match(queryRes.reply, /Tiền điện/);
     });
   });
 

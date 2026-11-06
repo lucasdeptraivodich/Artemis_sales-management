@@ -185,14 +185,18 @@ export const ORDER_TOOLS = [
     type: 'function',
     function: {
       name: 'manage_web_store',
-      description: 'Điều khiển mọi tính năng trên ứng dụng Web Artemis: ghi khoản chi phí mới (record_expense), ghi đơn bán nhanh (record_sale), thêm/sửa món hàng trong kho (upsert_item), thu toàn bộ tiền Ship COD (settle_all_cod), hoặc chuyển tab / mở cửa sổ chức năng trên giao diện (navigate_ui).',
+      description: 'Điều khiển mọi tính năng trên ứng dụng Web Artemis: ghi khoản chi phí mới (record_expense), ghi đơn bán nhanh hoặc ghi nợ (record_sale), chuyển đơn vừa bán sang ghi nợ Sổ Nợ (convert_sale_to_debt), thêm/sửa món hàng trong kho (upsert_item), thu toàn bộ tiền Ship COD (settle_all_cod), hoặc chuyển tab / mở cửa sổ chức năng trên giao diện (navigate_ui).',
       parameters: {
         type: 'object',
         properties: {
           operation: {
             type: 'string',
-            enum: ['record_expense', 'record_sale', 'upsert_item', 'settle_all_cod', 'navigate_ui'],
+            enum: ['record_expense', 'record_sale', 'upsert_item', 'settle_all_cod', 'navigate_ui', 'convert_sale_to_debt', 'query_weekday_report'],
             description: 'Loại thao tác trên hệ thống web.'
+          },
+          weekday_index: {
+            type: 'integer',
+            description: 'Chỉ số thứ trong tuần (0: Chủ Nhật, 1: Thứ 2, 2: Thứ 3, 3: Thứ 4, 4: Thứ 5, 5: Thứ 6, 6: Thứ 7) khi tra cứu thu chi theo thứ.'
           },
           item_name: {
             type: 'string',
@@ -218,6 +222,10 @@ export const ORDER_TOOLS = [
             type: 'string',
             enum: ['CASH_TRANSFER', 'DEBT', 'COD'],
             description: 'Phương thức thanh toán khi bán hàng.'
+          },
+          created_at: {
+            type: 'string',
+            description: 'Thời gian phát sinh giao dịch theo chuẩn ISO 8601 nếu người dùng nói ngày giờ (ví dụ: "hôm qua", "ngày 05/11/2026").'
           },
           ui_target: {
             type: 'string',

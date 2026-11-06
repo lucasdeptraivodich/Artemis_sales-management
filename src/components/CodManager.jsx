@@ -1,5 +1,13 @@
 import { useState, useMemo } from 'react';
 import { getCodOrders, markCodReceived, formatMoney, formatDate } from '../store';
+import {
+  IconTruck,
+  IconSearch,
+  IconX,
+  IconCopy,
+  IconCheck,
+  IconEdit,
+} from './Icons';
 
 function getCarrierTrackingUrl(code) {
   if (!code) return null;
@@ -77,64 +85,73 @@ export default function CodManager({ onRefresh, showToast, onEditOrder }) {
 
   return (
     <div className="page-container">
-      <div className="flex items-center justify-between mb-2 pt-2">
-        <h1 className="text-[1.35rem] font-extrabold text-white">📦 Đơn Ship / COD</h1>
-        <span className="text-[0.82rem] text-yellow-300 font-bold">
-          {allCodOrders.length} đơn
-        </span>
+      {/* Header */}
+      <div className="flex items-center justify-between mb-3 pt-1">
+        <div>
+          <h1 className="text-[1.25rem] font-extrabold text-white flex items-center gap-2">
+            <IconTruck className="w-5 h-5 text-blue-400" />
+            <span>Đơn Giao Hàng & COD</span>
+          </h1>
+          <p className="text-[0.72rem] text-slate-400 mt-0.5">
+            Tổng {allCodOrders.length} đơn ship giao hàng
+          </p>
+        </div>
       </div>
 
-      <div
-        className="glass-card p-4 mb-3 flex items-center justify-between"
-        style={{ borderLeft: '4px solid var(--color-blue-500)' }}
-      >
+      {/* Banner */}
+      <div className="bg-gradient-to-r from-blue-950/40 to-slate-900/80 border border-blue-500/30 rounded-2xl p-3.5 mb-3.5 flex items-center justify-between shadow-lg">
         <div>
-          <p className="text-[0.82rem] text-yellow-300 font-semibold">Chờ đối soát / thanh toán COD</p>
-          <p className="font-extrabold text-[1.3rem]" style={{ color: 'var(--color-blue-400)' }}>
+          <span className="text-[0.72rem] font-bold text-slate-300 uppercase tracking-wider block">
+            Chờ đối soát / thanh toán COD
+          </span>
+          <p className="font-black text-[1.4rem] text-blue-400 mt-0.5">
             {formatMoney(pendingTotal)}
           </p>
         </div>
         <div className="text-right">
-          <div className="flex items-center gap-1.5 justify-end">
-            <span className="pulse-dot" style={{ background: 'var(--color-orange-400)' }} />
-            <span className="text-[0.88rem] font-bold text-white">{pendingCount} chờ thu</span>
-          </div>
-          <span className="text-[0.78rem] text-slate-200 block mt-0.5">
-            {receivedCount} đã nhận
+          <span className="px-2.5 py-1 rounded-full bg-amber-500/20 text-amber-300 font-bold text-xs border border-amber-500/30">
+            {pendingCount} đơn chờ thu
+          </span>
+          <span className="text-[10px] text-slate-400 block mt-1">
+            {receivedCount} đơn đã nhận
           </span>
         </div>
       </div>
 
+      {/* Search Input */}
       <div className="relative mb-3">
         <input
-          className="input-field pl-9 pr-8"
+          className="input-field pl-9 pr-8 text-sm py-2"
           placeholder="Tìm người nhận, SĐT, mã vận đơn, địa chỉ..."
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
         />
-        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm opacity-60">🔍</span>
+        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500">
+          <IconSearch className="w-4 h-4" />
+        </span>
         {searchQuery && (
           <button
             onClick={() => setSearchQuery('')}
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-300 hover:text-white"
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
           >
-            ✕
+            <IconX className="w-3.5 h-3.5" />
           </button>
         )}
       </div>
 
-      <div className="flex gap-2 mb-4">
+      {/* Filter Tabs */}
+      <div className="flex gap-1.5 mb-3 text-xs">
         {[
-          { id: 'pending', label: `⏳ Chờ thu (${pendingCount})` },
-          { id: 'received', label: `✅ Đã nhận (${receivedCount})` },
+          { id: 'pending', label: `Chờ thu (${pendingCount})` },
+          { id: 'received', label: `Đã nhận (${receivedCount})` },
           { id: 'all', label: `Tất cả (${allCodOrders.length})` },
         ].map((f) => (
           <button
             key={f.id}
-            className={`flex-1 py-2.5 rounded-xl font-extrabold text-[0.88rem] transition-all border ${
+            className={`flex-1 py-2 rounded-xl font-bold transition-all border ${
               filter === f.id
-                ? 'bg-gradient-to-r from-blue-600 to-blue-500 text-white border-blue-400 shadow-md'
-                : 'bg-[var(--color-dark-600)] text-white hover:bg-[var(--color-dark-500)] border-white/10'
+                ? 'bg-blue-600 text-white border-blue-400 shadow-sm'
+                : 'bg-slate-900/60 text-slate-300 hover:bg-slate-800 border-white/5'
             }`}
             onClick={() => setFilter(f.id)}
           >
@@ -146,29 +163,38 @@ export default function CodManager({ onRefresh, showToast, onEditOrder }) {
       {/* Orders list */}
       {filteredOrders.length === 0 ? (
         <div className="glass-card p-8 text-center">
-          <p className="text-[2.5rem] mb-3">📭</p>
-          <p className="text-[var(--color-text-muted)] text-[1.05rem]">
-            {filter === 'pending' ? 'Không có đơn đang chờ thanh toán' : 'Chưa có đơn COD nào'}
+          <div className="w-12 h-12 rounded-2xl bg-slate-800/80 text-slate-500 mx-auto mb-2.5 flex items-center justify-center">
+            <IconTruck className="w-6 h-6" />
+          </div>
+          <p className="text-white font-bold text-sm">
+            {filter === 'pending' ? 'Không có đơn đang chờ COD' : 'Chưa có đơn COD nào'}
           </p>
-          <p className="text-[var(--color-text-muted)] text-[0.85rem] mt-1">
-            Thử thay đổi bộ lọc hoặc tạo đơn COD mới khi bán hàng.
+          <p className="text-slate-400 text-xs mt-1">
+            Chọn hình thức "Ship COD" khi bán hàng để tạo đơn mới.
           </p>
         </div>
       ) : (
-        <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-2.5">
           {filteredOrders.map((order) => {
             const trackingUrl = getCarrierTrackingUrl(order.tracking_code);
 
             return (
-              <div key={order.id} className={`cod-card ${order.is_cod_received ? 'received' : ''}`}>
+              <div
+                key={order.id}
+                className={`p-3 rounded-2xl bg-slate-900/60 border transition-all ${
+                  order.is_cod_received
+                    ? 'border-emerald-500/20 bg-slate-900/40 opacity-75'
+                    : 'border-white/5 hover:border-white/10'
+                }`}
+              >
                 {/* Top section */}
                 <div className="flex items-start justify-between mb-2">
                   <div className="flex-1 min-w-0 pr-2">
-                    <div className="flex items-center gap-2">
-                      <p className="font-bold text-[1.05rem] truncate">
+                    <div className="flex items-center gap-1.5">
+                      <p className="font-bold text-sm text-white truncate">
                         {order.item_name}
                         {order.quantity && order.quantity > 1 && (
-                          <span className="text-amber-300 font-bold ml-1.5 text-xs">
+                          <span className="text-emerald-400 font-bold ml-1.5 text-xs">
                             ×{order.quantity}
                           </span>
                         )}
@@ -177,54 +203,57 @@ export default function CodManager({ onRefresh, showToast, onEditOrder }) {
                         <button
                           onClick={() => onEditOrder(order)}
                           title="Sửa thông tin đơn ship COD"
-                          className="w-6 h-6 rounded bg-[var(--color-dark-600)] hover:bg-[var(--color-dark-500)] flex items-center justify-center text-[0.72rem] text-slate-300"
+                          className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white"
                         >
-                          ✏️
+                          <IconEdit className="w-3 h-3" />
                         </button>
                       )}
                     </div>
-                    <p className="text-[0.78rem] text-[var(--color-text-muted)] mt-0.5">
+                    <p className="text-[10px] text-slate-400 mt-0.5">
                       {formatDate(order.created_at)}
                     </p>
                   </div>
-                  <span className="font-extrabold text-[1.15rem]" style={{ color: 'var(--color-blue-400)' }}>
+                  <span className="font-extrabold text-sm text-blue-400">
                     {formatMoney(order.sale_price)}
                   </span>
                 </div>
 
                 {/* Customer info */}
-                  <div className="rounded-lg p-3 mb-3 bg-black/40 border border-white/5">
-                    {order.customer_name && (
-                      <p className="text-[0.92rem] font-bold text-white">👤 {order.customer_name}</p>
-                    )}
-                    {order.customer_phone && (
-                      <p className="text-[0.82rem] text-yellow-300 font-semibold mt-0.5">
-                        📱 {order.customer_phone}
-                      </p>
-                    )}
-                    {order.shipping_address && (
-                      <p className="text-[0.82rem] text-slate-100 font-medium mt-0.5">
-                        📍 {order.shipping_address}
-                      </p>
-                    )}
+                <div className="rounded-xl p-2.5 mb-2.5 bg-slate-950/50 border border-white/5 space-y-1">
+                  {order.customer_name && (
+                    <p className="text-xs font-bold text-white flex items-center gap-1.5">
+                      <span className="text-slate-400 font-normal">Người nhận:</span> {order.customer_name}
+                    </p>
+                  )}
+                  {order.customer_phone && (
+                    <p className="text-xs text-slate-300 font-medium">
+                      <span className="text-slate-400 font-normal">SĐT:</span> {order.customer_phone}
+                    </p>
+                  )}
+                  {order.shipping_address && (
+                    <p className="text-xs text-slate-300">
+                      <span className="text-slate-400 font-normal">Đ/c:</span> {order.shipping_address}
+                    </p>
+                  )}
                   {order.tracking_code && (
-                    <div className="flex items-center justify-between gap-2 mt-2 pt-2 border-t border-white/5">
-                      <span className="text-[0.82rem] font-semibold text-blue-400">
-                        🔖 MVĐ: {order.tracking_code}
+                    <div className="flex items-center justify-between gap-2 pt-1 border-t border-white/5">
+                      <span className="text-xs font-semibold text-blue-400 truncate">
+                        MVĐ: {order.tracking_code}
                       </span>
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex items-center gap-1 flex-shrink-0">
                         <button
                           onClick={() => handleCopyTracking(order.tracking_code)}
-                          className="text-[0.7rem] px-2 py-0.5 rounded bg-[var(--color-dark-600)] hover:bg-[var(--color-dark-500)] text-slate-300"
+                          className="text-[10px] px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center gap-1"
                         >
-                          Copy MVĐ
+                          <IconCopy className="w-3 h-3" />
+                          <span>Copy</span>
                         </button>
                         {trackingUrl && (
                           <a
                             href={trackingUrl}
                             target="_blank"
                             rel="noreferrer"
-                            className="text-[0.7rem] px-2 py-0.5 rounded bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 font-semibold"
+                            className="text-[10px] px-2 py-0.5 rounded bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 font-semibold"
                           >
                             Tra cứu ↗
                           </a>
@@ -235,31 +264,27 @@ export default function CodManager({ onRefresh, showToast, onEditOrder }) {
                 </div>
 
                 {/* Actions */}
-                <div className="flex gap-2">
+                <div className="flex gap-1.5">
                   {(order.customer_name || order.shipping_address) && (
                     <button
-                      className="flex-1 py-2.5 rounded-xl font-bold text-[0.88rem] active:scale-95 transition-transform"
-                      style={{
-                        background: 'var(--color-dark-500)',
-                        color: 'var(--color-text-primary)',
-                      }}
+                      className="flex-1 py-1.5 rounded-xl font-bold text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center gap-1 active:scale-95 transition-all"
                       onClick={() => handleCopyAddress(order)}
                     >
-                      📋 Copy Địa Chỉ
+                      <IconCopy className="w-3.5 h-3.5" />
+                      <span>Copy Địa Chỉ</span>
                     </button>
                   )}
 
                   <button
-                    className="flex-1 py-2.5 rounded-xl font-bold text-[0.88rem] flex items-center justify-center gap-1.5 active:scale-95 transition-transform"
-                    style={{
-                      background: order.is_cod_received
-                        ? 'rgba(34, 197, 94, 0.2)'
-                        : 'linear-gradient(135deg, var(--color-green-600), var(--color-green-500))',
-                      color: order.is_cod_received ? 'var(--color-green-400)' : 'white',
-                    }}
+                    className={`flex-1 py-1.5 rounded-xl font-bold text-xs flex items-center justify-center gap-1 active:scale-95 transition-all border ${
+                      order.is_cod_received
+                        ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300'
+                        : 'bg-emerald-500 text-slate-950 border-emerald-400 hover:bg-emerald-400'
+                    }`}
                     onClick={() => handleToggleCod(order)}
                   >
-                    {order.is_cod_received ? <>✅ Đã nhận tiền</> : <>💰 Nhận tiền COD</>}
+                    <IconCheck className="w-3.5 h-3.5" />
+                    <span>{order.is_cod_received ? 'Đã thu COD' : 'Xác nhận thu COD'}</span>
                   </button>
                 </div>
               </div>

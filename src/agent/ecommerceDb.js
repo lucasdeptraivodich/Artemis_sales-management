@@ -6,6 +6,8 @@
 import { isValidVietnamPhone, isValidQuantity } from './schemas.js';
 import { ORDER_STATUS, STATUS_LABELS, INITIAL_PRODUCTS, INITIAL_ORDERS } from './mockData.js';
 import {
+  getTransactions,
+  updateTransaction,
   getTransactionsByMonth,
   deleteTransactionsByIds,
   getDebtSummary,
@@ -14,7 +16,9 @@ import {
   addItem,
   updateItem,
   getItems,
-  settleAllPendingCodOrders
+  settleAllPendingCodOrders,
+  getWeekdayActivitySummary,
+  VIETNAMESE_WEEKDAYS
 } from '../store.js';
 
 export { ORDER_STATUS, STATUS_LABELS };
@@ -426,8 +430,61 @@ export class EcommerceDatabase {
       quantity = 1,
       customer_name = '',
       payment_method = 'CASH_TRANSFER',
-      ui_target = 'home'
+      ui_target = 'home',
+      created_at = null,
+      weekday_index = null
     } = args;
+
+    if (operation === 'query_weekday_report') {
+      const hasSpecificWeekday = weekday_index !== undefined && weekday_index !== null && weekday_index >= 0 && weekday_index <= 6;
+      const groups = getWeekdayActivitySummary({
+        weekdayFilter: hasSpecificWeekday ? weekday_index : 'ALL'
+      });
+
+      const wdInfo = hasSpecificWeekday ? VIETNAMESE_WEEKDAYS[weekday_index] : null;
+      const fmt = (n) => new Intl.NumberFormat('vi-VN').format(n || 0) + 'đ';
+
+      if (groups.length === 0) {
+        return {
+          requiresConfirmation: false,
+          cardType: 'WEB_ACTION_CARD',
+          message: hasSpecificWeekday
+            ? `📅 Hiện chưa có giao dịch bán hàng hay chi tiêu nào được ghi nhận vào ${wdInfo.label} ạ!`
+            : `📅 Hiện tại chưa có giao dịch nào được ghi nhận trong hệ thống ạ.`
+        };
+      }
+
+      const lines = [];
+      for (const g of groups.slice(0, 5)) {
+        const salesStr =
+          g.salesList.length > 0
+            ? g.salesList
+                .map(
+                  (s) =>
+                    `${s.item_name}${s.quantity > 1 ? ` ×${s.quantity}` : ''} (${fmt(s.amount)}${
+                      s.payment_method === 'DEBT' ? ' - Nợ' : ''
+                    })`
+                )
+                .join(', ')
+            : 'Không có';
+        const expStr =
+          g.expensesList.length > 0
+            ? g.expensesList.map((e) => `${e.item_name} (${fmt(e.amount)})`).join(', ')
+            : 'Không có';
+        lines.push(
+          `📅 ${g.weekdayLabel} (${g.displayDate}):\n` +
+            `  • 🛒 Bán được (+${fmt(g.totalSales)}): ${salesStr}\n` +
+            `  • 💸 Chi tiêu (-${fmt(g.totalExpenses)}): ${expStr}`
+        );
+      }
+
+      return {
+        requiresConfirmation: false,
+        cardType: 'WEB_ACTION_CARD',
+        weekdayGroups: groups.slice(0, 5),
+        message: `📊 Báo cáo chi tiết theo Thứ (Bán gì & Chi gì):\n\n` + lines.join('\n\n')
+      };
+    }
 
     if (operation === 'navigate_ui') {
       const targetLabels = {
@@ -450,6 +507,65 @@ export class EcommerceDatabase {
       };
     }
 
+    if (operation === 'convert_sale_to_debt') {
+      const transactions = getTransactions();
+      const targetAmount = Math.max(0, Number(amount) || 0);
+      const custName = (customer_name || '').trim();
+
+      // 1. Tìm đơn bán hàng gần nhất cần chuyển sang nợ
+      let targetTx = null;
+      if (targetAmount > 0) {
+        // Tìm đơn bán gần nhất có số tiền tương ứng
+        targetTx = transactions.find((t) => t.type === 'SALE' && Math.abs((t.sale_price || 0) - targetAmount) < 1);
+      }
+      if (!targetTx && custName) {
+        // Tìm đơn bán gần nhất của khách hàng này
+        targetTx = transactions.find((t) => t.type === 'SALE' && (t.customer_name || '').toLowerCase() === custName.toLowerCase());
+      }
+      if (!targetTx) {
+        // Fallback: Lấy đơn bán gần nhất chưa phải là nợ, hoặc đơn bán gần nhất
+        targetTx = transactions.find((t) => t.type === 'SALE' && t.payment_method !== 'DEBT') || transactions.find((t) => t.type === 'SALE');
+      }
+
+      if (targetTx) {
+        const finalCust = custName || (targetTx.customer_name && targetTx.customer_name !== 'Khách lẻ' ? targetTx.customer_name : 'Khách nợ');
+        const updates = {
+          payment_method: 'DEBT',
+          customer_name: finalCust
+        };
+        if (created_at) {
+          updates.created_at = created_at;
+        }
+        const updated = updateTransaction(targetTx.id, updates);
+        return {
+          requiresConfirmation: false,
+          cardType: 'WEB_ACTION_CARD',
+          tx: updated,
+          message: `✅ Đã chuyển đơn bán "${updated.item_name}" (${new Intl.NumberFormat('vi-VN').format(updated.sale_price)}đ) của khách "${updated.customer_name}" sang hình thức Ghi Nợ vào Sổ Nợ thành công!`
+        };
+      }
+
+      // 2. Nếu chưa có đơn bán nào trước đó để sửa, tự động tạo mới đơn nợ
+      const fallbackAmount = targetAmount > 0 ? targetAmount : 100000;
+      const finalCust = custName || 'Khách nợ';
+      const tx = addTransaction({
+        type: 'SALE',
+        item_name: item_name ? item_name.trim() : 'Đơn ghi nợ',
+        sale_price: fallbackAmount,
+        cost_price: 0,
+        quantity: 1,
+        payment_method: 'DEBT',
+        customer_name: finalCust,
+        created_at: created_at || new Date().toISOString()
+      });
+      return {
+        requiresConfirmation: false,
+        cardType: 'WEB_ACTION_CARD',
+        tx,
+        message: `✅ Đã ghi nhận khoản nợ ${new Intl.NumberFormat('vi-VN').format(tx.sale_price)}đ cho khách "${tx.customer_name}" vào Sổ Nợ thành công!`
+      };
+    }
+
     if (operation === 'record_expense') {
       const expenseName = (item_name || 'Chi phí phát sinh').trim();
       const expenseAmount = Math.max(0, Number(amount) || 0);
@@ -461,7 +577,8 @@ export class EcommerceDatabase {
         item_name: expenseName,
         sale_price: expenseAmount,
         cost_price: 0,
-        payment_method: 'CASH_TRANSFER'
+        payment_method: 'CASH_TRANSFER',
+        created_at: created_at || new Date().toISOString()
       });
       return {
         requiresConfirmation: false,
@@ -477,6 +594,8 @@ export class EcommerceDatabase {
       if (saleAmount <= 0) {
         throw new Error('Vui lòng cho biết giá tiền bán hàng (ví dụ: "Ghi bán Áo thun 250k").');
       }
+      const isDebt = payment_method === 'DEBT';
+      const finalCust = customer_name && customer_name.trim() ? customer_name.trim() : (isDebt ? 'Khách nợ' : 'Khách lẻ');
       const tx = addTransaction({
         type: 'SALE',
         item_name: saleName,
@@ -484,13 +603,24 @@ export class EcommerceDatabase {
         cost_price: Math.max(0, Number(cost_price) || 0),
         quantity: Math.max(1, Number(quantity) || 1),
         payment_method: payment_method || 'CASH_TRANSFER',
-        customer_name: customer_name || 'Khách lẻ'
+        customer_name: finalCust,
+        created_at: created_at || new Date().toISOString()
       });
+
+      const formattedAmount = new Intl.NumberFormat('vi-VN').format(saleAmount) + 'đ';
+      if (isDebt) {
+        return {
+          requiresConfirmation: false,
+          cardType: 'WEB_ACTION_CARD',
+          tx,
+          message: `✅ Đã ghi nhận đơn nợ "${saleName}" (${formattedAmount}) cho khách "${finalCust}" vào Sổ Nợ thành công!`
+        };
+      }
       return {
         requiresConfirmation: false,
         cardType: 'WEB_ACTION_CARD',
         tx,
-        message: `✅ Đã ghi đơn bán "${saleName}" (${new Intl.NumberFormat('vi-VN').format(saleAmount)}đ) lên Trang chủ!`
+        message: `✅ Đã ghi đơn bán "${saleName}" (${formattedAmount}) lên Trang chủ!`
       };
     }
 

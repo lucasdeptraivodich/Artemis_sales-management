@@ -14,15 +14,16 @@ import CustomerModal from './components/CustomerModal';
 import ReportExportModal from './components/ReportExportModal';
 import AdvancedSettingsModal from './components/AdvancedSettingsModal';
 import AiChatWidget from './components/AiChatWidget';
+import { IconHome, IconReceipt, IconUsers, IconTruck, IconUser, IconCloud } from './components/Icons';
 
 import { getCurrentUser, onAuthStateChange } from './supabase';
 import { setCurrentUser, syncAllFromCloud, initAppDatabase } from './store';
 
 const TABS = [
-  { id: 'home', label: 'Trang chủ', icon: '🏠' },
-  { id: 'history', label: 'Lịch sử đơn', icon: '📋' },
-  { id: 'debt', label: 'Sổ nợ', icon: '👥' },
-  { id: 'cod', label: 'Đơn Ship', icon: '📦' },
+  { id: 'home', label: 'Trang chủ', Icon: IconHome },
+  { id: 'history', label: 'Lịch sử', Icon: IconReceipt },
+  { id: 'debt', label: 'Sổ nợ', Icon: IconUsers },
+  { id: 'cod', label: 'Đơn Ship', Icon: IconTruck },
 ];
 
 export default function App() {
@@ -263,24 +264,31 @@ export default function App() {
 
       {/* Bottom Navigation */}
       <nav className="bottom-nav">
-        <div className="flex max-w-[480px] mx-auto">
-          {TABS.map((tab) => (
-            <button
-              key={tab.id}
-              className={`bottom-nav-item ${activeTab === tab.id ? 'active' : ''}`}
-              onClick={() => setActiveTab(tab.id)}
-            >
-              <span className="icon">{tab.icon}</span>
-              <span>{tab.label}</span>
-            </button>
-          ))}
+        <div className="flex max-w-[560px] mx-auto">
+          {TABS.map((tab) => {
+            const TabIcon = tab.Icon;
+            return (
+              <button
+                key={tab.id}
+                className={`bottom-nav-item ${activeTab === tab.id ? 'active' : ''}`}
+                onClick={() => setActiveTab(tab.id)}
+              >
+                <span className="icon">
+                  <TabIcon className="w-5 h-5" />
+                </span>
+                <span>{tab.label}</span>
+              </button>
+            );
+          })}
           {/* Quick Account Tab */}
           <button
             className={`bottom-nav-item ${showAuthModal ? 'active' : ''}`}
             onClick={() => setShowAuthModal(true)}
             title={user ? 'Tài khoản' : 'Đăng nhập'}
           >
-            <span className="icon">{user ? '👤' : '🔐'}</span>
+            <span className="icon">
+              {user ? <IconUser className="w-5 h-5 text-emerald-400" /> : <IconCloud className="w-5 h-5" />}
+            </span>
             <span>{user ? 'Tài khoản' : 'Đăng nhập'}</span>
           </button>
         </div>

@@ -4,15 +4,17 @@ import { processAgentMessage } from '../agent/aiAgentEngine';
 import { ecommerceDb } from '../agent/ecommerceDb';
 
 const QUICK_PROMPTS = [
-  { label: '💸 Xóa hết nợ', prompt: 'Xóa hết nợ của tháng 11' },
-  { label: '🗑️ Xóa đơn T11/2026', prompt: 'Xóa hàng loạt đơn của tháng 11/2026' },
+  { label: '🛒 Bán trang sức 6tr', prompt: 'ghi bán hàng:hôm nay đã bán một đơn trang sức trị giá 6 triệu' },
+  { label: '💸 Chuyển sang nợ', prompt: 'Chuyển đơn 6 triệu sang nợ, đức nợ 6 triệu' },
+  { label: '📅 Thứ mấy bán gì?', prompt: 'Thứ mấy bán được những gì chi tiêu những gì?' },
   { label: '👥 Mở Sổ nợ', prompt: 'Mở sổ nợ' },
+  { label: '🗑️ Xóa hết nợ', prompt: 'Xóa hết nợ của tháng 11' },
   { label: '📊 Mở Dòng tiền', prompt: 'Mở báo cáo dòng tiền' },
-  { label: '🔍 Tra cứu ORD-1001', prompt: 'Tra cứu tình trạng đơn hàng ORD-1001' },
 ];
 
 const VAULT_KEY = 'artemis_ai_key_vault_v2';
 const LEGACY_KEY = 'artemis_ai_api_key';
+const BASE_URL_KEY = 'artemis_ai_base_url';
 const VAULT_SALT = 'ARTEMIS_SECURE_SALT_2026';
 
 function encodeApiKey(rawKey) {
@@ -55,16 +57,28 @@ export default function AiChatWidget({ onRefresh, showToast, onUiAction }) {
         localStorage.removeItem(LEGACY_KEY);
         return legacy;
       }
+      return (
+        (typeof import.meta !== 'undefined' && (import.meta?.env?.VITE_GEMINI_API_KEY || import.meta?.env?.VITE_OPENAI_API_KEY)) ||
+        ''
+      );
+    } catch (e) {
       return '';
+    }
+  });
+  const [apiBaseUrl, setApiBaseUrl] = useState(() => {
+    try {
+      return localStorage.getItem(BASE_URL_KEY) || (typeof import.meta !== 'undefined' && import.meta?.env?.VITE_AI_BASE_URL) || '';
     } catch (e) {
       return '';
     }
   });
   const [selectedModel, setSelectedModel] = useState(() => {
     try {
-      return localStorage.getItem('artemis_ai_model') || 'gemini-3.8-flash';
+      const saved = localStorage.getItem('artemis_ai_model');
+      if (saved && !saved.includes('3.8') && !saved.includes('2.5')) return saved;
+      return (typeof import.meta !== 'undefined' && import.meta?.env?.VITE_GEMINI_MODEL) || 'gemini-2.0-flash';
     } catch (e) {
-      return 'gemini-3.8-flash';
+      return 'gemini-2.0-flash';
     }
   });
   const [saveToast, setSaveToast] = useState(false);
@@ -76,7 +90,7 @@ export default function AiChatWidget({ onRefresh, showToast, onUiAction }) {
     {
       id: 'welcome',
       sender: 'assistant',
-      text: 'Chào bạn! Em là Trợ lý AI Bán Hàng Artemis. Em có thể tra cứu đơn, tạo đơn mới hoặc sửa/hủy đơn. Bạn có thể chọn gợi ý bên dưới để thử nghiệm!',
+      text: 'Chào anh/chị! Em là Trợ lý Toàn Năng Artemis. Em có thể giúp: Ghi bán hàng, Ghi chi phí, Quản lý nợ, hoặc Mở bất kỳ mục nào trên web. Anh/chị cần em làm gì ạ?',
       timestamp: new Date()
     }
   ]);
@@ -109,7 +123,8 @@ export default function AiChatWidget({ onRefresh, showToast, onUiAction }) {
         messages: apiMessages,
         sessionState,
         apiKey: apiKey.trim() || null,
-        model: selectedModel
+        model: selectedModel,
+        baseUrl: apiBaseUrl.trim() || null
       });
 
       if (responseData.sessionState) {
@@ -125,7 +140,7 @@ export default function AiChatWidget({ onRefresh, showToast, onUiAction }) {
         responseData.card?.type === 'WEB_ACTION_CARD'
       ) {
         if (onRefresh) onRefresh();
-        if (showToast && responseData.card?.type === 'ACTION_CONFIRMED_CARD') {
+        if (showToast) {
           showToast(responseData.reply || '✅ Đã thực hiện thành công!');
         }
       }
@@ -288,6 +303,18 @@ export default function AiChatWidget({ onRefresh, showToast, onUiAction }) {
                   className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-white focus:outline-none focus:border-emerald-500"
                 />
               </div>
+              <div>
+                <label className="text-[10px] text-slate-400 block mb-0.5">
+                  API Base URL <span className="text-cyan-400">(Tùy chọn cho 9Router / Proxy / Ollama)</span>:
+                </label>
+                <input
+                  type="text"
+                  value={apiBaseUrl}
+                  onChange={(e) => setApiBaseUrl(e.target.value)}
+                  placeholder="Ví dụ: http://localhost:20128/v1 (để trống nếu dùng Gemini trực tiếp)"
+                  className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-white focus:outline-none focus:border-emerald-500 font-mono text-[11px]"
+                />
+              </div>
               <div className="flex gap-2">
                 <div className="flex-1">
                   <label className="text-[10px] text-slate-400 block mb-0.5">Model:</label>
@@ -296,23 +323,32 @@ export default function AiChatWidget({ onRefresh, showToast, onUiAction }) {
                     onChange={(e) => setSelectedModel(e.target.value)}
                     className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-white"
                   >
-                    <option value="gemini-3.8-flash">Gemini 3.8 Flash (Ultra / Mới nhất)</option>
-                    <option value="gemini-2.5-flash">Gemini 2.5 Flash (Khuyên dùng)</option>
-                    <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
-                    <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
+                    <option value="gemini-2.0-flash">Google Gemini 2.0 Flash (Khuyên dùng - Nhanh & Mới)</option>
+                    <option value="gemini-1.5-flash">Google Gemini 1.5 Flash (Miễn phí & Ổn định)</option>
+                    <option value="gemini-1.5-pro">Google Gemini 1.5 Pro (Thông minh)</option>
                     <option value="gpt-4o-mini">OpenAI GPT-4o-mini</option>
+                    <option value="claude-3-5-sonnet">Claude 3.5 Sonnet (qua 9Router)</option>
+                    <option value="deepseek-chat">DeepSeek V3 (qua 9Router)</option>
                   </select>
                 </div>
                 <div className="flex items-end">
                   <button
                     onClick={() => {
-                      const trimmed = apiKey.trim();
-                      if (trimmed) {
-                        localStorage.setItem(VAULT_KEY, encodeApiKey(trimmed));
+                      const trimmedKey = apiKey.trim();
+                      if (trimmedKey) {
+                        localStorage.setItem(VAULT_KEY, encodeApiKey(trimmedKey));
                       } else {
                         localStorage.removeItem(VAULT_KEY);
                       }
                       localStorage.removeItem(LEGACY_KEY);
+
+                      const trimmedBase = apiBaseUrl.trim();
+                      if (trimmedBase) {
+                        localStorage.setItem(BASE_URL_KEY, trimmedBase);
+                      } else {
+                        localStorage.removeItem(BASE_URL_KEY);
+                      }
+
                       localStorage.setItem('artemis_ai_model', selectedModel);
                       setSaveToast(true);
                       setTimeout(() => setSaveToast(false), 2000);

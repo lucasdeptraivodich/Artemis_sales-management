@@ -1486,21 +1486,117 @@ export function formatMoney(amount) {
   return new Intl.NumberFormat('vi-VN').format(num) + 'đ';
 }
 
+export const VIETNAMESE_WEEKDAYS = [
+  { index: 0, short: 'CN', label: 'Chủ Nhật', color: '#ff4d6d', bg: 'rgba(255, 77, 109, 0.22)', border: 'rgba(255, 77, 109, 0.45)', gradient: 'from-rose-500 to-pink-600' },
+  { index: 1, short: 'T2', label: 'Thứ Hai', color: '#38bdf8', bg: 'rgba(56, 189, 248, 0.22)', border: 'rgba(56, 189, 248, 0.45)', gradient: 'from-sky-500 to-blue-600' },
+  { index: 2, short: 'T3', label: 'Thứ Ba', color: '#c084fc', bg: 'rgba(192, 132, 252, 0.22)', border: 'rgba(192, 132, 252, 0.45)', gradient: 'from-purple-500 to-indigo-600' },
+  { index: 3, short: 'T4', label: 'Thứ Tư', color: '#34d399', bg: 'rgba(52, 211, 153, 0.22)', border: 'rgba(52, 211, 153, 0.45)', gradient: 'from-emerald-500 to-teal-600' },
+  { index: 4, short: 'T5', label: 'Thứ Năm', color: '#fbbf24', bg: 'rgba(251, 191, 36, 0.22)', border: 'rgba(251, 191, 36, 0.45)', gradient: 'from-amber-500 to-orange-600' },
+  { index: 5, short: 'T6', label: 'Thứ Sáu', color: '#f472b6', bg: 'rgba(244, 114, 182, 0.22)', border: 'rgba(244, 114, 182, 0.45)', gradient: 'from-pink-500 to-fuchsia-600' },
+  { index: 6, short: 'T7', label: 'Thứ Bảy', color: '#818cf8', bg: 'rgba(129, 140, 248, 0.22)', border: 'rgba(129, 140, 248, 0.45)', gradient: 'from-indigo-500 to-violet-600' },
+];
+
+export function getWeekdayInfo(isoString) {
+  if (!isoString) return VIETNAMESE_WEEKDAYS[0];
+  const d = new Date(isoString);
+  if (isNaN(d.getTime())) return VIETNAMESE_WEEKDAYS[0];
+  return VIETNAMESE_WEEKDAYS[d.getDay()] || VIETNAMESE_WEEKDAYS[0];
+}
+
 export function formatDate(isoString) {
   if (!isoString) return '';
   const d = new Date(isoString);
+  if (isNaN(d.getTime())) return '';
+  const wd = getWeekdayInfo(isoString);
   const day = d.getDate().toString().padStart(2, '0');
   const month = (d.getMonth() + 1).toString().padStart(2, '0');
   const hours = d.getHours().toString().padStart(2, '0');
   const mins = d.getMinutes().toString().padStart(2, '0');
-  return `${day}/${month} ${hours}:${mins}`;
+  return `${wd.label}, ${day}/${month} • ${hours}:${mins}`;
 }
 
 export function formatFullDate(isoString) {
   if (!isoString) return '';
   const d = new Date(isoString);
+  if (isNaN(d.getTime())) return '';
+  const wd = getWeekdayInfo(isoString);
   const day = d.getDate().toString().padStart(2, '0');
   const month = (d.getMonth() + 1).toString().padStart(2, '0');
   const year = d.getFullYear();
-  return `${day}/${month}/${year}`;
+  return `${wd.label}, ${day}/${month}/${year}`;
+}
+
+/**
+ * Tổng hợp chi tiết theo từng Thứ / Ngày: Thứ mấy bán được những gì, chi tiêu những gì
+ */
+export function getWeekdayActivitySummary({ year, month, weekdayFilter = null } = {}) {
+  const transactions = getTransactions();
+  const filtered = transactions.filter((tx) => {
+    const d = new Date(tx.created_at);
+    if (isNaN(d.getTime())) return false;
+    if (year !== undefined && year !== null && d.getFullYear() !== year) return false;
+    if (month !== undefined && month !== null && d.getMonth() !== month) return false;
+    if (weekdayFilter !== null && weekdayFilter !== undefined && weekdayFilter !== 'ALL') {
+      if (d.getDay() !== Number(weekdayFilter)) return false;
+    }
+    return true;
+  });
+
+  // Gom nhóm theo ngày cụ thể (YYYY-MM-DD) kèm thông tin Thứ
+  const dayMap = new Map();
+  for (const tx of filtered) {
+    const d = new Date(tx.created_at);
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    const dateKey = `${yyyy}-${mm}-${dd}`;
+    const wd = VIETNAMESE_WEEKDAYS[d.getDay()];
+
+    if (!dayMap.has(dateKey)) {
+      dayMap.set(dateKey, {
+        dateKey,
+        displayDate: `${dd}/${mm}/${yyyy}`,
+        shortDate: `${dd}/${mm}`,
+        weekdayIndex: wd.index,
+        weekdayLabel: wd.label,
+        weekdayShort: wd.short,
+        color: wd.color,
+        bg: wd.bg,
+        border: wd.border,
+        gradient: wd.gradient,
+        totalSales: 0,
+        totalExpenses: 0,
+        salesList: [],
+        expensesList: [],
+        transactions: []
+      });
+    }
+
+    const group = dayMap.get(dateKey);
+    group.transactions.push(tx);
+    const amount = Number(tx.sale_price) || 0;
+
+    if (tx.type === 'SALE' || tx.type === 'DEBT_PAYMENT') {
+      group.totalSales += amount;
+      group.salesList.push({
+        id: tx.id,
+        item_name: tx.item_name || 'Đơn bán',
+        quantity: tx.quantity || 1,
+        amount,
+        customer_name: tx.customer_name || '',
+        payment_method: tx.payment_method || 'CASH_TRANSFER',
+        type: tx.type
+      });
+    } else if (tx.type === 'EXPENSE') {
+      group.totalExpenses += amount;
+      group.expensesList.push({
+        id: tx.id,
+        item_name: tx.item_name || 'Chi tiêu',
+        amount
+      });
+    }
+  }
+
+  // Sắp xếp theo ngày mới nhất lên đầu
+  return Array.from(dayMap.values()).sort((a, b) => b.dateKey.localeCompare(a.dateKey));
 }

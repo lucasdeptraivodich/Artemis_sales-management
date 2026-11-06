@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { getItems, addTransaction, updateTransaction, getCustomers } from '../store';
 import { calculateOrderTotals, cleanQuantity, roundMoney } from '../utils/pricing';
+import { IconCart, IconEdit, IconX, IconChevronDown, IconChevronUp, IconCheck, IconPlus, IconMinus } from './Icons';
 
 function formatCurrencyDisplay(val) {
   if (val === null || val === undefined || val === '') return '';
@@ -57,8 +58,10 @@ export default function SaleForm({ onClose, onComplete, initialData = null }) {
   const [salePrice, setSalePrice] = useState(initSalePrice);
   const [costPrice, setCostPrice] = useState(initCostPrice);
 
-  // Discount & VAT state
-  const [showAdvancedPricing, setShowAdvancedPricing] = useState(Boolean(initialData?.discount_amount || initialData?.tax_amount));
+  // Advanced options (Cost, Discount, VAT)
+  const [showAdvanced, setShowAdvanced] = useState(
+    Boolean(initialData?.discount_amount || initialData?.tax_amount || initialData?.unit_cost || initialData?.cost_price)
+  );
   const [discountType, setDiscountType] = useState(initialData?.discount_type || 'PERCENT');
   const [discountValue, setDiscountValue] = useState(
     initialData?.discount_value !== undefined && initialData?.discount_value > 0
@@ -69,6 +72,7 @@ export default function SaleForm({ onClose, onComplete, initialData = null }) {
 
   // Payment & Change state
   const [paymentMethod, setPaymentMethod] = useState(initialData?.payment_method || 'CASH_TRANSFER');
+  const [showChangeCalc, setShowChangeCalc] = useState(Boolean(initialData?.customer_paid));
   const [customerPaid, setCustomerPaid] = useState(initialData?.customer_paid ? String(initialData.customer_paid) : '');
   const [customerName, setCustomerName] = useState(initialData?.customer_name || '');
   const [customerPhone, setCustomerPhone] = useState(initialData?.customer_phone || '');
@@ -186,40 +190,47 @@ export default function SaleForm({ onClose, onComplete, initialData = null }) {
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content max-w-[500px]" onClick={(e) => e.stopPropagation()}>
+      <div className="modal-content max-w-[520px]" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2">
-            <span className="text-[1.4rem]">{isEditing ? '✏️' : '🛒'}</span>
-            <h2 className="text-[1.3rem] font-extrabold text-[var(--color-text-primary)]">
-              {isEditing ? 'Chỉnh Sửa Đơn Hàng' : 'Bán Hàng'}
-            </h2>
+        <div className="flex items-center justify-between mb-3.5 pb-2 border-b border-white/10">
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center">
+              {isEditing ? <IconEdit className="w-5 h-5" /> : <IconCart className="w-5 h-5" />}
+            </div>
+            <div>
+              <h2 className="text-[1.15rem] font-extrabold text-white leading-tight">
+                {isEditing ? 'Chỉnh Sửa Đơn Hàng' : 'Bán Hàng Nhanh'}
+              </h2>
+              <p className="text-[0.72rem] text-slate-400">Ghi nhận đơn và dòng tiền tức thì</p>
+            </div>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="w-9 h-9 rounded-full flex items-center justify-center text-[1.2rem] bg-[var(--color-dark-500)] text-slate-300 hover:text-white hover:bg-[var(--color-dark-400)] active:scale-90 transition-all font-bold"
+            className="w-8 h-8 rounded-full flex items-center justify-center bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700 active:scale-90 transition-all"
             title="Đóng"
           >
-            ✕
+            <IconX className="w-4 h-4" />
           </button>
         </div>
 
-        {/* Step 1: Chọn món hàng (Tên món & Số lượng) */}
-        <div className="mb-4">
-          <p className="section-title">① Chọn món hàng</p>
-
-          <div className="mb-3">
-            <label className="text-[0.8rem] text-[var(--color-text-muted)] mb-1.5 block font-semibold">
-              Tên món hàng / sản phẩm <span className="text-red-400">*</span>
+        {/* Step 1: Chọn món hàng & Số lượng */}
+        <div className="mb-3 bg-slate-900/60 p-3 rounded-2xl border border-white/5">
+          <div className="flex items-center justify-between mb-1.5">
+            <label className="text-[0.78rem] font-semibold text-slate-300">
+              Món hàng / Sản phẩm <span className="text-rose-400">*</span>
             </label>
-            <div className="relative">
+            <span className="text-[0.72rem] text-slate-400">Số lượng</span>
+          </div>
+
+          <div className="flex gap-2">
+            <div className="relative flex-1">
               <input
                 ref={nameInputRef}
                 type="text"
                 list="item-suggestions"
-                className="input-field pr-10"
-                placeholder="Nhập tên sản phẩm (VD: Áo, Hoa tươi, Túi...)"
+                className="input-field pr-8 text-sm py-2"
+                placeholder="Nhập hoặc chọn món..."
                 value={itemName}
                 onChange={(e) => handleNameChange(e.target.value)}
               />
@@ -230,7 +241,7 @@ export default function SaleForm({ onClose, onComplete, initialData = null }) {
                     setItemName('');
                     nameInputRef.current?.focus();
                   }}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full bg-[var(--color-dark-400)] text-slate-300 hover:text-white hover:bg-[var(--color-dark-300)] flex items-center justify-center text-xs active:scale-90 transition-all shadow-sm"
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 w-5 h-5 rounded-full bg-slate-700 text-slate-300 hover:text-white flex items-center justify-center text-[10px]"
                   title="Xóa nhanh văn bản"
                 >
                   ✕
@@ -238,32 +249,15 @@ export default function SaleForm({ onClose, onComplete, initialData = null }) {
               )}
             </div>
 
-            <datalist id="item-suggestions">
-              {items
-                .filter((i) => i.name !== 'Khác...')
-                .map((i) => (
-                  <option key={i.id} value={i.name} />
-                ))}
-            </datalist>
-          </div>
-
-          <div>
-            <label className="text-[0.8rem] text-[var(--color-text-muted)] mb-1.5 block font-semibold">
-              Số lượng
-            </label>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center bg-slate-800/80 rounded-xl border border-white/10 p-0.5">
               <button
                 type="button"
                 onClick={handleDecrementQty}
                 disabled={orderCalculations.quantity <= 1}
-                className={`w-12 h-12 rounded-xl flex items-center justify-center text-xl font-extrabold transition-all border border-white/5 active:scale-95 ${
-                  orderCalculations.quantity <= 1
-                    ? 'bg-[var(--color-dark-600)] text-slate-600 cursor-not-allowed opacity-40'
-                    : 'bg-[var(--color-dark-600)] hover:bg-[var(--color-dark-500)] text-slate-200 hover:text-white'
-                }`}
+                className="w-8 h-8 rounded-lg bg-slate-700/60 text-slate-300 hover:text-white hover:bg-slate-600 disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center active:scale-90 transition-all"
                 title="Giảm số lượng"
               >
-                −
+                <IconMinus className="w-3.5 h-3.5" />
               </button>
 
               <input
@@ -271,7 +265,7 @@ export default function SaleForm({ onClose, onComplete, initialData = null }) {
                 step="any"
                 min="0.001"
                 inputMode="decimal"
-                className="input-field text-center font-extrabold text-lg flex-1 py-2.5"
+                className="w-12 text-center bg-transparent font-extrabold text-sm text-white focus:outline-none"
                 value={quantity}
                 onChange={(e) => setQuantity(e.target.value)}
                 onBlur={() => {
@@ -284,55 +278,77 @@ export default function SaleForm({ onClose, onComplete, initialData = null }) {
               <button
                 type="button"
                 onClick={handleIncrementQty}
-                className="w-12 h-12 rounded-xl bg-[var(--color-dark-600)] hover:bg-[var(--color-dark-500)] text-slate-200 hover:text-white flex items-center justify-center text-xl font-extrabold transition-all border border-white/5 active:scale-95"
+                className="w-8 h-8 rounded-lg bg-slate-700/60 text-slate-300 hover:text-white hover:bg-slate-600 flex items-center justify-center active:scale-90 transition-all"
                 title="Tăng số lượng"
               >
-                +
+                <IconPlus className="w-3.5 h-3.5" />
               </button>
             </div>
           </div>
+
+          <datalist id="item-suggestions">
+            {items
+              .filter((i) => i.name !== 'Khác...')
+              .map((i) => (
+                <option key={i.id} value={i.name} />
+              ))}
+          </datalist>
+
+          {/* Quick item chips */}
+          {items.length > 0 && (
+            <div className="flex flex-wrap gap-1 mt-2 pt-1.5 border-t border-white/5">
+              {items.slice(0, 6).map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => {
+                    setItemName(item.name);
+                    if (item.default_price > 0) setSalePrice(String(item.default_price));
+                    if (item.default_cost > 0) setCostPrice(String(item.default_cost));
+                  }}
+                  className={`text-[0.72rem] px-2 py-0.5 rounded-lg border transition-all ${
+                    itemName.trim().toLowerCase() === item.name.toLowerCase()
+                      ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300 font-bold'
+                      : 'bg-slate-800/70 border-white/5 text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  {item.name}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
-        {/* Step 2: Giá tiền */}
-        <div className="mb-4">
-          <p className="section-title">② Đơn giá & Giá vốn</p>
-          <div className="flex gap-3">
-            <div className="flex-1">
-              <label className="text-[0.8rem] text-[var(--color-text-muted)] mb-1.5 block font-semibold">
-                Đơn giá bán <span className="text-red-400">*</span>
-              </label>
-              <input
-                type="text"
-                inputMode="numeric"
-                className="input-field text-emerald-400 font-bold"
-                placeholder="0 đ"
-                value={formatCurrencyDisplay(salePrice)}
-                onChange={(e) => handleCurrencyChange(e, salePrice, setSalePrice)}
-              />
-            </div>
-            <div className="flex-1">
-              <label className="text-[0.8rem] text-[var(--color-text-muted)] mb-1.5 block font-semibold">
-                Giá vốn (nếu có)
-              </label>
-              <input
-                type="text"
-                inputMode="numeric"
-                className="input-field text-slate-300 font-medium"
-                placeholder="0 đ"
-                value={formatCurrencyDisplay(costPrice)}
-                onChange={(e) => handleCurrencyChange(e, costPrice, setCostPrice)}
-              />
-            </div>
+        {/* Step 2: Đơn giá bán */}
+        <div className="mb-3 bg-slate-900/60 p-3 rounded-2xl border border-white/5">
+          <div className="flex items-center justify-between mb-1.5">
+            <label className="text-[0.78rem] font-semibold text-slate-300">
+              Đơn giá bán <span className="text-rose-400">*</span>
+            </label>
+            {orderCalculations.unitPrice > 0 && orderCalculations.quantity > 1 && (
+              <span className="text-[0.72rem] text-emerald-400 font-bold">
+                Thành tiền: {formatCurrencyDisplay(orderCalculations.subtotal)}
+              </span>
+            )}
           </div>
 
+          <input
+            type="text"
+            inputMode="numeric"
+            className="input-field text-emerald-400 font-extrabold text-xl py-2 tracking-tight"
+            placeholder="0 đ"
+            value={formatCurrencyDisplay(salePrice)}
+            onChange={(e) => handleCurrencyChange(e, salePrice, setSalePrice)}
+          />
+
           {/* Quick denomination chips & Rounding */}
-          <div className="flex flex-wrap items-center gap-1.5 mt-2.5">
+          <div className="flex flex-wrap items-center gap-1.5 mt-2">
             {QUICK_PRICE_CHIPS.map((chip) => (
               <button
                 key={chip.label}
                 type="button"
                 onClick={() => handleAddPrice(chip.add)}
-                className="px-2.5 py-1.5 rounded-xl bg-[var(--color-dark-600)] hover:bg-[var(--color-dark-500)] border border-emerald-500/20 text-emerald-400 font-extrabold text-xs active:scale-95 transition-all shadow-sm"
+                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-white/10 text-emerald-400 font-bold text-xs active:scale-95 transition-all shadow-sm"
               >
                 {chip.label}
               </button>
@@ -341,18 +357,18 @@ export default function SaleForm({ onClose, onComplete, initialData = null }) {
               type="button"
               onClick={handleRoundPrice}
               disabled={orderCalculations.unitPrice <= 0}
-              className={`px-2.5 py-1.5 rounded-xl bg-[var(--color-dark-600)] hover:bg-[var(--color-dark-500)] border border-white/10 text-amber-300 font-bold text-xs active:scale-95 transition-all shadow-sm ${
+              className={`px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-white/10 text-amber-300 font-bold text-xs active:scale-95 transition-all shadow-sm ${
                 orderCalculations.unitPrice <= 0 ? 'opacity-40 cursor-not-allowed' : ''
               }`}
               title="Làm tròn số tiền lẻ"
             >
-              🎯 Làm tròn
+              🎯 Tròn giá
             </button>
             {orderCalculations.unitPrice > 0 && (
               <button
                 type="button"
                 onClick={() => setSalePrice('')}
-                className="px-2 py-1.5 rounded-xl bg-[var(--color-dark-600)] hover:bg-red-950/40 border border-red-500/20 text-red-400 font-semibold text-xs active:scale-95 transition-all"
+                className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-rose-950/40 border border-rose-500/20 text-rose-400 font-semibold text-xs active:scale-95 transition-all ml-auto"
                 title="Xóa giá"
               >
                 Xóa
@@ -361,213 +377,144 @@ export default function SaleForm({ onClose, onComplete, initialData = null }) {
           </div>
         </div>
 
-        {/* Step 3: Chiết khấu / Giảm giá & Thuế VAT */}
-        <div className="mb-4">
-          <button
-            type="button"
-            onClick={() => setShowAdvancedPricing(!showAdvancedPricing)}
-            className="flex items-center justify-between w-full p-2.5 rounded-xl bg-[var(--color-dark-700)] border border-white/10 hover:border-emerald-500/30 text-xs font-bold text-slate-300 transition-all"
-          >
-            <span className="flex items-center gap-1.5">
-              <span>🎁</span>
-              <span>Chiết khấu / Giảm giá & Thuế VAT</span>
-              {(orderCalculations.discountAmount > 0 || orderCalculations.taxAmount > 0) && (
-                <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 text-[0.7rem]">
-                  Đã áp dụng
-                </span>
-              )}
-            </span>
-            <span>{showAdvancedPricing ? '▲ Thu gọn' : '▼ Mở rộng'}</span>
-          </button>
+        {/* Step 3: Hình thức thanh toán */}
+        <div className="mb-3 bg-slate-900/60 p-3 rounded-2xl border border-white/5">
+          <label className="text-[0.78rem] font-semibold text-slate-300 mb-2 block">
+            Hình thức thanh toán
+          </label>
+          <div className="grid grid-cols-3 gap-1.5">
+            <button
+              type="button"
+              className={`py-2 px-1 rounded-xl text-xs font-bold transition-all flex flex-col items-center gap-1 border ${
+                paymentMethod === 'CASH_TRANSFER'
+                  ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/60 shadow-sm'
+                  : 'bg-slate-800 text-slate-400 border-white/5 hover:text-white'
+              }`}
+              onClick={() => setPaymentMethod('CASH_TRANSFER')}
+            >
+              <span className="text-base">💵</span>
+              <span>Trả ngay</span>
+            </button>
 
-          {showAdvancedPricing && (
-            <div className="p-3.5 mt-2 rounded-xl bg-[var(--color-dark-700)] border border-white/10 space-y-3 animate-fadeIn text-xs">
-              {/* Giảm giá */}
-              <div>
-                <label className="text-slate-300 font-semibold block mb-1.5">
-                  Giảm giá / Voucher:
-                </label>
-                <div className="flex gap-2">
-                  <div className="flex rounded-xl bg-[var(--color-dark-600)] p-1 border border-white/10">
+            <button
+              type="button"
+              className={`py-2 px-1 rounded-xl text-xs font-bold transition-all flex flex-col items-center gap-1 border ${
+                paymentMethod === 'DEBT'
+                  ? 'bg-rose-500/20 text-rose-300 border-rose-500/60 shadow-sm'
+                  : 'bg-slate-800 text-slate-400 border-white/5 hover:text-white'
+              }`}
+              onClick={() => setPaymentMethod('DEBT')}
+            >
+              <span className="text-base">📝</span>
+              <span>Ghi nợ</span>
+            </button>
+
+            <button
+              type="button"
+              className={`py-2 px-1 rounded-xl text-xs font-bold transition-all flex flex-col items-center gap-1 border ${
+                paymentMethod === 'COD'
+                  ? 'bg-blue-500/20 text-blue-300 border-blue-500/60 shadow-sm'
+                  : 'bg-slate-800 text-slate-400 border-white/5 hover:text-white'
+              }`}
+              onClick={() => setPaymentMethod('COD')}
+            >
+              <span className="text-base">📦</span>
+              <span>Ship COD</span>
+            </button>
+          </div>
+
+          {/* Sub-block for CASH_TRANSFER: Tính tiền thối */}
+          {paymentMethod === 'CASH_TRANSFER' && (
+            <div className="mt-2.5 pt-2 border-t border-white/5">
+              {!showChangeCalc && !customerPaid ? (
+                <button
+                  type="button"
+                  onClick={() => setShowChangeCalc(true)}
+                  className="text-[0.75rem] text-slate-400 hover:text-emerald-400 flex items-center gap-1 transition-colors"
+                >
+                  <span>💰</span>
+                  <span>Tính tiền thừa thối lại cho khách?</span>
+                </button>
+              ) : (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[0.75rem] font-semibold text-slate-300">Tiền khách đưa:</span>
                     <button
                       type="button"
-                      onClick={() => setDiscountType('PERCENT')}
-                      className={`px-3 py-1 rounded-lg font-bold text-xs transition-all ${
-                        discountType === 'PERCENT'
-                          ? 'bg-emerald-500 text-slate-950 shadow'
-                          : 'text-slate-400 hover:text-white'
-                      }`}
+                      onClick={() => {
+                        setShowChangeCalc(false);
+                        setCustomerPaid('');
+                      }}
+                      className="text-[0.7rem] text-slate-500 hover:text-slate-300"
                     >
-                      %
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setDiscountType('FIXED')}
-                      className={`px-3 py-1 rounded-lg font-bold text-xs transition-all ${
-                        discountType === 'FIXED'
-                          ? 'bg-emerald-500 text-slate-950 shadow'
-                          : 'text-slate-400 hover:text-white'
-                      }`}
-                    >
-                      đ
+                      Ẩn
                     </button>
                   </div>
-                  <input
-                    type="number"
-                    min="0"
-                    max={discountType === 'PERCENT' ? '100' : undefined}
-                    inputMode="numeric"
-                    placeholder={discountType === 'PERCENT' ? 'Ví dụ: 10 (%)' : 'Số tiền giảm (đ)'}
-                    className="input-field text-emerald-400 font-bold flex-1 py-1.5 text-sm"
-                    value={discountValue}
-                    onChange={(e) => setDiscountValue(e.target.value)}
-                  />
-                </div>
-                {orderCalculations.discountAmount > 0 && (
-                  <p className="text-emerald-400 mt-1 font-semibold text-[0.75rem]">
-                    - Giảm: {formatCurrencyDisplay(orderCalculations.discountAmount)} (Sau giảm: {formatCurrencyDisplay(orderCalculations.effectiveSubtotal)})
-                  </p>
-                )}
-              </div>
-
-              {/* Thuế VAT */}
-              <div>
-                <label className="text-slate-300 font-semibold block mb-1.5">
-                  Thuế giá trị gia tăng (VAT):
-                </label>
-                <div className="flex gap-1.5">
-                  {['0', '5', '8', '10'].map((rate) => (
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      className="input-field text-amber-300 font-bold text-sm py-1.5 flex-1"
+                      placeholder="Số tiền khách đưa..."
+                      value={formatCurrencyDisplay(customerPaid)}
+                      onChange={(e) => handleCurrencyChange(e, customerPaid, setCustomerPaid)}
+                    />
                     <button
-                      key={rate}
                       type="button"
-                      onClick={() => setTaxRate(rate)}
-                      className={`flex-1 py-1.5 rounded-xl font-bold text-xs transition-all border ${
-                        taxRate === rate
-                          ? 'bg-blue-600 text-white border-blue-400 shadow'
-                          : 'bg-[var(--color-dark-600)] text-slate-300 border-white/10 hover:bg-[var(--color-dark-500)]'
-                      }`}
+                      onClick={() => setCustomerPaid(String(orderCalculations.totalAmount))}
+                      className="px-2.5 py-1.5 rounded-xl bg-emerald-500/20 text-emerald-400 font-bold text-xs border border-emerald-500/30 hover:bg-emerald-500/30 active:scale-95"
                     >
-                      {rate}%
+                      Đưa đủ
                     </button>
-                  ))}
+                  </div>
+                  <div className="flex gap-1 flex-wrap">
+                    {[50000, 100000, 200000, 500000].map((amt) => (
+                      <button
+                        key={amt}
+                        type="button"
+                        onClick={() => setCustomerPaid(String(amt))}
+                        className="text-[0.72rem] px-2 py-0.5 rounded-lg bg-slate-800 border border-white/5 text-slate-300 hover:text-white"
+                      >
+                        {formatCurrencyDisplay(amt)}
+                      </button>
+                    ))}
+                  </div>
+                  {customerPaid && orderCalculations.customerPaid >= orderCalculations.totalAmount ? (
+                    <div className="p-2 rounded-xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-between text-xs">
+                      <span className="text-emerald-300 font-bold">🎉 Tiền thừa trả khách:</span>
+                      <span className="text-emerald-400 font-extrabold text-sm">
+                        {formatCurrencyDisplay(orderCalculations.changeAmount)}
+                      </span>
+                    </div>
+                  ) : customerPaid && orderCalculations.customerPaid < orderCalculations.totalAmount ? (
+                    <div className="p-2 rounded-xl bg-amber-500/15 border border-amber-500/30 text-xs font-bold text-amber-300">
+                      ⚠️ Khách đưa thiếu: {formatCurrencyDisplay(orderCalculations.remainingDebt)}
+                    </div>
+                  ) : null}
                 </div>
-                {orderCalculations.taxAmount > 0 && (
-                  <p className="text-blue-400 mt-1 font-semibold text-[0.75rem]">
-                    + Tiền thuế ({taxRate}%): {formatCurrencyDisplay(orderCalculations.taxAmount)}
-                  </p>
-                )}
-              </div>
+              )}
             </div>
           )}
         </div>
 
-        {/* Step 4: Hình thức thanh toán */}
-        <div className="mb-4">
-          <p className="section-title">④ Hình thức thanh toán</p>
-          <div className="flex flex-col gap-2">
-            <button
-              type="button"
-              className={`radio-option ${paymentMethod === 'CASH_TRANSFER' ? 'selected' : ''}`}
-              onClick={() => setPaymentMethod('CASH_TRANSFER')}
-            >
-              <div className="radio-dot">
-                <div className="radio-dot-inner" />
-              </div>
-              <span>💵 Khách trả ngay (Tiền mặt / Chuyển khoản)</span>
-            </button>
 
-            <button
-              type="button"
-              className={`radio-option ${paymentMethod === 'DEBT' ? 'selected' : ''}`}
-              onClick={() => setPaymentMethod('DEBT')}
-            >
-              <div className="radio-dot">
-                <div className="radio-dot-inner" />
-              </div>
-              <span>📝 Ghi nợ (Chưa thanh toán)</span>
-            </button>
-
-            <button
-              type="button"
-              className={`radio-option ${paymentMethod === 'COD' ? 'selected' : ''}`}
-              onClick={() => setPaymentMethod('COD')}
-            >
-              <div className="radio-dot">
-                <div className="radio-dot-inner" />
-              </div>
-              <span>📦 Đơn Ship / COD</span>
-            </button>
-          </div>
-        </div>
-
-        {/* Tiền khách đưa & Tiền thừa trả khách khi trả ngay */}
-        {paymentMethod === 'CASH_TRANSFER' && (
-          <div className="mb-4 p-3.5 rounded-xl bg-[var(--color-dark-700)] border border-emerald-500/20 animate-fadeIn">
-            <label className="text-[0.8rem] text-slate-300 font-semibold block mb-1.5">
-              💵 Tiền khách đưa (Tính tiền thừa thối lại):
-            </label>
-            <div className="flex gap-2 mb-2">
-              <input
-                type="text"
-                inputMode="numeric"
-                className="input-field text-amber-300 font-bold text-base flex-1"
-                placeholder="Nhập số tiền khách đưa..."
-                value={formatCurrencyDisplay(customerPaid)}
-                onChange={(e) => handleCurrencyChange(e, customerPaid, setCustomerPaid)}
-              />
-              <button
-                type="button"
-                onClick={() => setCustomerPaid(String(orderCalculations.totalAmount))}
-                className="px-3 py-1.5 rounded-xl bg-emerald-500/20 text-emerald-400 font-bold text-xs border border-emerald-500/30 hover:bg-emerald-500/30 active:scale-95"
-              >
-                Đưa đủ
-              </button>
-            </div>
-
-            {/* Gợi ý mệnh giá nhanh */}
-            <div className="flex gap-1.5 flex-wrap mb-2">
-              {[50000, 100000, 200000, 500000].map((amt) => (
-                <button
-                  key={amt}
-                  type="button"
-                  onClick={() => setCustomerPaid(String(amt))}
-                  className="item-chip text-[0.75rem] py-1 px-2.5"
-                >
-                  {formatCurrencyDisplay(amt)}
-                </button>
-              ))}
-            </div>
-
-            {/* Kết quả tiền thừa */}
-            {customerPaid && orderCalculations.customerPaid >= orderCalculations.totalAmount ? (
-              <div className="p-2.5 rounded-xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-between">
-                <span className="text-xs font-bold text-emerald-300">
-                  🎉 Tiền thừa trả khách:
-                </span>
-                <span className="text-base font-extrabold text-emerald-400">
-                  {formatCurrencyDisplay(orderCalculations.changeAmount)}
-                </span>
-              </div>
-            ) : customerPaid && orderCalculations.customerPaid < orderCalculations.totalAmount ? (
-              <div className="p-2 rounded-xl bg-amber-500/20 border border-amber-500/40 text-xs font-bold text-amber-300">
-                ⚠️ Khách đưa thiếu: {formatCurrencyDisplay(orderCalculations.remainingDebt)}
-              </div>
-            ) : null}
-          </div>
-        )}
 
         {/* DEBT: Customer info */}
         {paymentMethod === 'DEBT' && (
-          <div className="mb-4 animate-fadeIn">
-            <p className="section-title">Thông tin khách nợ</p>
+          <div className="mb-3 bg-slate-900/60 p-3 rounded-2xl border border-white/5 animate-fadeIn">
+            <label className="text-[0.78rem] font-semibold text-slate-300 mb-1.5 block">
+              Thông tin khách nợ <span className="text-rose-400">*</span>
+            </label>
             {customers.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 mb-3">
-                {customers.map((c) => (
+              <div className="flex flex-wrap gap-1 mb-2">
+                {customers.slice(0, 6).map((c) => (
                   <button
                     key={c.id}
                     type="button"
-                    className={`item-chip text-[0.82rem] py-1.5 px-3 ${
-                      customerName.trim().toLowerCase() === c.name.trim().toLowerCase() ? 'selected' : ''
+                    className={`text-[0.72rem] px-2 py-0.5 rounded-lg border transition-all ${
+                      customerName.trim().toLowerCase() === c.name.trim().toLowerCase()
+                        ? 'bg-rose-500/20 border-rose-500/50 text-rose-300 font-bold'
+                        : 'bg-slate-800 text-slate-400 border-white/5 hover:text-white'
                     }`}
                     onClick={() => {
                       setCustomerName(c.name);
@@ -579,70 +526,71 @@ export default function SaleForm({ onClose, onComplete, initialData = null }) {
                 ))}
               </div>
             )}
-            <div className="mb-2">
+            <div className="space-y-2">
               <input
-                className="input-field"
+                className="input-field text-sm py-2"
                 placeholder="Tên khách hàng (* bắt buộc để ghi nợ)..."
                 value={customerName}
                 onChange={(e) => setCustomerName(e.target.value)}
               />
-              {!customerName.trim() && (
-                <p className="text-[0.75rem] text-amber-400 mt-1 pl-1">
-                  ⚠️ Cần nhập tên khách hàng để lưu vào Sổ Nợ
-                </p>
-              )}
+              <input
+                className="input-field text-sm py-2"
+                type="tel"
+                inputMode="tel"
+                placeholder="Số điện thoại (tùy chọn)..."
+                value={customerPhone}
+                onChange={(e) => setCustomerPhone(e.target.value)}
+              />
             </div>
-            <input
-              className="input-field"
-              type="tel"
-              inputMode="tel"
-              placeholder="Số điện thoại (nếu có)..."
-              value={customerPhone}
-              onChange={(e) => setCustomerPhone(e.target.value)}
-            />
+            {!customerName.trim() && (
+              <p className="text-[0.72rem] text-amber-400 mt-1 pl-1">
+                ⚠️ Cần nhập tên khách hàng để lưu vào Sổ Nợ
+              </p>
+            )}
           </div>
         )}
 
         {/* COD: Shipping info */}
         {paymentMethod === 'COD' && (
-          <div className="mb-4 animate-fadeIn">
-            <p className="section-title">Thông tin gửi hàng</p>
-            <input
-              className="input-field mb-2"
-              placeholder="Tên người nhận..."
-              value={customerName}
-              onChange={(e) => setCustomerName(e.target.value)}
-            />
-            <input
-              className="input-field mb-2"
-              type="tel"
-              inputMode="tel"
-              placeholder="Số điện thoại người nhận..."
-              value={customerPhone}
-              onChange={(e) => setCustomerPhone(e.target.value)}
-            />
+          <div className="mb-3 bg-slate-900/60 p-3 rounded-2xl border border-white/5 animate-fadeIn space-y-2">
+            <label className="text-[0.78rem] font-semibold text-slate-300 block">
+              Thông tin giao hàng COD
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <input
+                className="input-field text-sm py-1.5"
+                placeholder="Tên người nhận..."
+                value={customerName}
+                onChange={(e) => setCustomerName(e.target.value)}
+              />
+              <input
+                className="input-field text-sm py-1.5"
+                type="tel"
+                inputMode="tel"
+                placeholder="Số điện thoại..."
+                value={customerPhone}
+                onChange={(e) => setCustomerPhone(e.target.value)}
+              />
+            </div>
             <textarea
-              className="input-field mb-2"
+              className="input-field text-sm py-1.5"
               rows={2}
-              placeholder="Địa chỉ giao hàng..."
+              placeholder="Địa chỉ giao hàng chi tiết..."
               value={shippingAddress}
               onChange={(e) => setShippingAddress(e.target.value)}
             />
-            <input
-              className="input-field mb-2"
-              placeholder="Mã vận đơn (nếu có)..."
-              value={trackingCode}
-              onChange={(e) => setTrackingCode(e.target.value)}
-            />
-            <div>
-              <label className="text-[0.8rem] text-[var(--color-text-muted)] mb-1 block font-semibold">
-                Phí vận chuyển (thu hộ / cộng vào tổng tiền)
-              </label>
+            <div className="grid grid-cols-2 gap-2">
               <input
-                className="input-field text-blue-400 font-bold"
+                className="input-field text-sm py-1.5"
+                placeholder="Mã vận đơn..."
+                value={trackingCode}
+                onChange={(e) => setTrackingCode(e.target.value)}
+              />
+              <input
+                className="input-field text-blue-400 font-bold text-sm py-1.5"
                 type="text"
                 inputMode="numeric"
-                placeholder="0 đ"
+                placeholder="Phí ship (0 đ)..."
                 value={formatCurrencyDisplay(shippingFee)}
                 onChange={(e) => handleCurrencyChange(e, shippingFee, setShippingFee)}
               />
@@ -650,12 +598,123 @@ export default function SaleForm({ onClose, onComplete, initialData = null }) {
           </div>
         )}
 
+        {/* Accordion: Tùy chọn nâng cao (Giá vốn, Chiết khấu, Thuế VAT) */}
+        <div className="mb-3 bg-slate-900/60 rounded-2xl border border-white/5 overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setShowAdvanced(!showAdvanced)}
+            className="w-full px-3 py-2 flex items-center justify-between text-xs font-bold text-slate-300 hover:text-white transition-all"
+          >
+            <span className="flex items-center gap-1.5">
+              <span>⚙️</span>
+              <span>Tùy chọn nâng cao (Vốn, Giảm giá, Thuế)</span>
+              {(orderCalculations.discountAmount > 0 || orderCalculations.taxAmount > 0 || costPrice) && (
+                <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 text-[10px]">
+                  Đã áp dụng
+                </span>
+              )}
+            </span>
+            {showAdvanced ? <IconChevronUp className="w-3.5 h-3.5 text-slate-400" /> : <IconChevronDown className="w-3.5 h-3.5 text-slate-400" />}
+          </button>
+
+          {showAdvanced && (
+            <div className="p-3 border-t border-white/5 space-y-2.5 text-xs animate-fadeIn">
+              {/* Giá vốn */}
+              <div>
+                <label className="text-slate-400 font-semibold mb-1 block">
+                  Giá vốn đơn vị (để tính lợi nhuận):
+                </label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  className="input-field text-slate-200 font-bold text-sm py-1.5"
+                  placeholder="0 đ (bỏ qua nếu không tính)"
+                  value={formatCurrencyDisplay(costPrice)}
+                  onChange={(e) => handleCurrencyChange(e, costPrice, setCostPrice)}
+                />
+              </div>
+
+              {/* Giảm giá */}
+              <div>
+                <label className="text-slate-400 font-semibold mb-1 block">
+                  Giảm giá / Voucher:
+                </label>
+                <div className="flex gap-1.5">
+                  <div className="flex rounded-lg bg-slate-800 p-0.5 border border-white/10">
+                    <button
+                      type="button"
+                      onClick={() => setDiscountType('PERCENT')}
+                      className={`px-2.5 py-1 rounded text-xs font-bold ${
+                        discountType === 'PERCENT' ? 'bg-emerald-500 text-slate-950 shadow' : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      %
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDiscountType('FIXED')}
+                      className={`px-2.5 py-1 rounded text-xs font-bold ${
+                        discountType === 'FIXED' ? 'bg-emerald-500 text-slate-950 shadow' : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      đ
+                    </button>
+                  </div>
+                  <input
+                    type="number"
+                    min="0"
+                    max={discountType === 'PERCENT' ? '100' : undefined}
+                    inputMode="numeric"
+                    placeholder={discountType === 'PERCENT' ? '10 (%)' : 'Số tiền giảm (đ)'}
+                    className="input-field text-emerald-400 font-bold flex-1 py-1 text-sm"
+                    value={discountValue}
+                    onChange={(e) => setDiscountValue(e.target.value)}
+                  />
+                </div>
+                {orderCalculations.discountAmount > 0 && (
+                  <p className="text-emerald-400 mt-1 font-semibold text-[0.72rem]">
+                    - Giảm: {formatCurrencyDisplay(orderCalculations.discountAmount)} (Sau giảm: {formatCurrencyDisplay(orderCalculations.effectiveSubtotal)})
+                  </p>
+                )}
+              </div>
+
+              {/* Thuế VAT */}
+              <div>
+                <label className="text-slate-400 font-semibold mb-1 block">
+                  Thuế VAT:
+                </label>
+                <div className="flex gap-1">
+                  {['0', '5', '8', '10'].map((rate) => (
+                    <button
+                      key={rate}
+                      type="button"
+                      onClick={() => setTaxRate(rate)}
+                      className={`flex-1 py-1 rounded-lg font-bold text-xs border ${
+                        taxRate === rate
+                          ? 'bg-blue-600 text-white border-blue-400 shadow'
+                          : 'bg-slate-800 text-slate-400 border-white/5 hover:text-white'
+                      }`}
+                    >
+                      {rate}%
+                    </button>
+                  ))}
+                </div>
+                {orderCalculations.taxAmount > 0 && (
+                  <p className="text-blue-400 mt-1 font-semibold text-[0.72rem]">
+                    + Tiền thuế ({taxRate}%): {formatCurrencyDisplay(orderCalculations.taxAmount)}
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
         {/* Tổng kết phiếu thanh toán (Order Breakdown Banner) */}
         {orderCalculations.unitPrice > 0 && (
-          <div className="mb-4 p-3 rounded-2xl bg-[var(--color-dark-700)] border border-emerald-500/30 text-xs space-y-1.5">
+          <div className="mb-3.5 p-3 rounded-2xl bg-slate-900/80 border border-emerald-500/30 text-xs space-y-1.5">
             <div className="flex justify-between text-slate-300">
               <span>Tiền hàng ({formatCurrencyDisplay(orderCalculations.unitPrice)} × {orderCalculations.quantity}):</span>
-              <span className="font-semibold">{formatCurrencyDisplay(orderCalculations.subtotal)}</span>
+              <span className="font-semibold text-white">{formatCurrencyDisplay(orderCalculations.subtotal)}</span>
             </div>
             {orderCalculations.discountAmount > 0 && (
               <div className="flex justify-between text-emerald-400">
@@ -676,7 +735,7 @@ export default function SaleForm({ onClose, onComplete, initialData = null }) {
               </div>
             )}
             <div className="pt-2 border-t border-white/10 flex justify-between items-center text-sm">
-              <span className="font-extrabold text-white uppercase tracking-wider">
+              <span className="font-bold text-white uppercase tracking-wider text-xs">
                 Tổng thanh toán:
               </span>
               <span className="font-extrabold text-emerald-400 text-base">
@@ -690,17 +749,18 @@ export default function SaleForm({ onClose, onComplete, initialData = null }) {
         <div>
           <button
             type="button"
-            className="btn-giant btn-sale py-3.5"
+            className="btn-giant btn-sale py-3"
             onClick={handleSubmit}
             disabled={!isValid}
             style={{
-              opacity: isValid ? 1 : 0.5,
+              opacity: isValid ? 1 : 0.45,
               cursor: isValid ? 'pointer' : 'not-allowed',
             }}
           >
-            <span>{isEditing ? '💾 LƯU THAY ĐỔI' : '✅ HOÀN THÀNH'}</span>
+            <IconCheck className="w-5 h-5" />
+            <span>{isEditing ? 'LƯU THAY ĐỔI' : 'HOÀN THÀNH'}</span>
             {isValid && (
-              <span className="text-[1.1rem] opacity-90 font-extrabold ml-1">
+              <span className="text-sm font-extrabold ml-1 opacity-95">
                 • {formatCurrencyDisplay(orderCalculations.totalAmount)}
               </span>
             )}
