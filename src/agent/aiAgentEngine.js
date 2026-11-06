@@ -1,6 +1,6 @@
 import { ORDER_TOOLS } from './schemas.js';
 import { ecommerceDb } from './ecommerceDb.js';
-import { SYSTEM_PROMPT, simulateLlmToolCalling } from './intentMatcher.js';
+import { SYSTEM_PROMPT, buildLiveStoreContext, simulateLlmToolCalling } from './intentMatcher.js';
 
 export { ORDER_TOOLS, SYSTEM_PROMPT };
 
@@ -125,8 +125,9 @@ async function callGemini(messages, apiKey, modelName = 'gemini-2.0-flash') {
 
   const functionDeclarations = ORDER_TOOLS.map((t) => sanitizeSchemaForGemini(t.function));
 
+  const fullSystemPrompt = SYSTEM_PROMPT + buildLiveStoreContext();
   const body = {
-    systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+    systemInstruction: { parts: [{ text: fullSystemPrompt }] },
     contents,
     tools: [{ functionDeclarations }],
     generationConfig: { temperature: 0.2 }
@@ -163,32 +164,16 @@ async function callGemini(messages, apiKey, modelName = 'gemini-2.0-flash') {
   return null;
 }
 
-async function callOpenAi(messages, apiKey, baseUrl = null, modelName = 'gpt-4o-mini') {
-  try {
-    const endpoint = baseUrl
-      ? `${baseUrl.replace(/\/+$/, '')}/chat/completions`
-      : 'https://api.openai.com/v1/chat/completions';
+/**
+ * Giải mã phản hồi từ OpenAI / 9Router / Groq (Hỗ trợ cả JSON chuẩn lẫn luồng SSE data: {...})
+ */
+function parseOpenAiPayload(rawText) {
+  const trimmed = (rawText || '').trim();
+  if (!trimmed) return null;
 
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey || 'proxy-key'}`
-      },
-      body: JSON.stringify({
-        model: modelName || 'gpt-4o-mini',
-        messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages],
-        tools: ORDER_TOOLS,
-        tool_choice: 'auto',
-        temperature: 0.2
-      })
-    });
-    if (!res.ok) {
-      const errText = await res.text().catch(() => '');
-      console.warn(`OpenAI / Custom Base API error (${res.status}):`, errText);
-      return null;
-    }
-    const data = await res.json();
+  // 1. Trường hợp JSON tiêu chuẩn
+  if (trimmed.startsWith('{')) {
+    const data = JSON.parse(trimmed);
     const msg = data.choices?.[0]?.message;
     if (msg?.tool_calls?.length > 0) {
       const tc = msg.tool_calls[0];
@@ -198,8 +183,143 @@ async function callOpenAi(messages, apiKey, baseUrl = null, modelName = 'gpt-4o-
       };
     }
     if (msg?.content) return { textOnly: msg.content };
-  } catch (err) {
-    console.warn('OpenAI / Custom Base API error:', err.message);
+    return null;
+  }
+
+  // 2. Trường hợp proxy trả về luồng SSE (data: {...})
+  let accumulatedContent = '';
+  let toolName = '';
+  let toolArgsStr = '';
+
+  const lines = trimmed.split('\n');
+  for (const line of lines) {
+    const cleanLine = line.trim();
+    if (!cleanLine.startsWith('data:')) continue;
+    const payload = cleanLine.slice(5).trim();
+    if (!payload || payload === '[DONE]') continue;
+    try {
+      const chunk = JSON.parse(payload);
+      const choice = chunk.choices?.[0];
+      const delta = choice?.delta || choice?.message;
+      if (!delta) continue;
+      if (delta.content) {
+        accumulatedContent += delta.content;
+      }
+      if (delta.tool_calls?.length > 0) {
+        const tc = delta.tool_calls[0];
+        if (tc.function?.name) toolName += tc.function.name;
+        if (tc.function?.arguments) toolArgsStr += tc.function.arguments;
+      }
+    } catch (e) {
+      // Bỏ qua dòng SSE không hợp lệ
+    }
+  }
+
+  if (toolName) {
+    try {
+      return { name: toolName, args: JSON.parse(toolArgsStr || '{}') };
+    } catch (e) {
+      return { name: toolName, args: {} };
+    }
+  }
+  if (accumulatedContent.trim()) {
+    return { textOnly: accumulatedContent.trim() };
+  }
+  return null;
+}
+
+async function callOpenAi(messages, apiKey, baseUrl = null, modelName = 'gpt-4o-mini') {
+  const endpoint = baseUrl
+    ? `${baseUrl.replace(/\/+$/, '')}/chat/completions`
+    : 'https://api.openai.com/v1/chat/completions';
+
+  const isGroqEndpoint = endpoint.includes('api.groq.com');
+  const modelCandidates = [];
+  if (isGroqEndpoint) {
+    if (modelName && (modelName.includes('llama') || modelName.includes('qwen') || modelName.includes('mixtral'))) {
+      modelCandidates.push(modelName.replace(/^groq\//, ''));
+    }
+    for (const groqModel of ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant']) {
+      if (!modelCandidates.includes(groqModel)) modelCandidates.push(groqModel);
+    }
+  } else {
+    // Nếu modelName là gemini-2.0-flash đã bị deprecated trên Google/9Router, bỏ qua hoặc đổi thành auto-code
+    if (modelName && !modelName.includes('2.0') && !modelName.includes('2.5')) {
+      modelCandidates.push(modelName);
+    }
+    if (baseUrl) {
+      for (const fallback of [
+        'auto-code',
+        'ag/gemini-3.8-flash',
+        'gemini/gemini-3.8-flash',
+        'ds/deepseek-chat',
+        'groq/llama-3.3-70b-versatile'
+      ]) {
+        if (!modelCandidates.includes(fallback)) modelCandidates.push(fallback);
+      }
+    } else if (!modelCandidates.includes('gpt-4o-mini')) {
+      modelCandidates.push('gpt-4o-mini');
+    }
+  }
+
+  const fullSystemPrompt = SYSTEM_PROMPT + buildLiveStoreContext();
+  const envKey =
+    (typeof import.meta !== 'undefined' && import.meta?.env?.VITE_AI_API_KEY) ||
+    (typeof process !== 'undefined' && process?.env?.VITE_AI_API_KEY) ||
+    null;
+
+  for (const candidateModel of modelCandidates) {
+    try {
+      let activeKey = apiKey || envKey || 'proxy-key';
+      let res = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${activeKey}`
+        },
+        body: JSON.stringify({
+          model: candidateModel,
+          stream: false,
+          messages: [{ role: 'system', content: fullSystemPrompt }, ...messages],
+          tools: ORDER_TOOLS,
+          tool_choice: 'auto',
+          temperature: 0.2
+        })
+      });
+
+      // Nếu key truyền từ localStorage bị 401 và có key trong .env, tự động thử lại bằng envKey
+      if (res.status === 401 && envKey && activeKey !== envKey) {
+        activeKey = envKey;
+        res = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${activeKey}`
+          },
+          body: JSON.stringify({
+            model: candidateModel,
+            stream: false,
+            messages: [{ role: 'system', content: fullSystemPrompt }, ...messages],
+            tools: ORDER_TOOLS,
+            tool_choice: 'auto',
+            temperature: 0.2
+          })
+        });
+      }
+
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        console.warn(`OpenAI / Custom Base API error (${res.status} - ${candidateModel}):`, errText);
+        if (res.status === 401 || res.status === 403) break;
+        continue;
+      }
+      const rawText = await res.text();
+      const parsed = parseOpenAiPayload(rawText);
+      if (parsed) return parsed;
+    } catch (err) {
+      console.warn(`OpenAI / Custom Base API error (${candidateModel}):`, err.message);
+      break;
+    }
   }
   return null;
 }
@@ -274,22 +394,56 @@ export async function processAgentMessage({ messages, sessionState = {}, apiKey 
     sessionState.pendingActionId = null;
   }
 
-  // 2A. Nếu có cấu hình Custom API Base URL (9Router / Local Proxy / OpenRouter)
-  if (baseUrl) {
-    const customRes = await callOpenAi(messages, apiKey, baseUrl, model);
+  // 2A. Tầng 1: Gọi qua Custom API Base URL (9Router trên máy bạn / Proxy nội bộ)
+  const activeBaseUrl =
+    baseUrl ||
+    (typeof import.meta !== 'undefined' && import.meta?.env?.VITE_AI_BASE_URL) ||
+    (typeof process !== 'undefined' && process?.env?.VITE_AI_BASE_URL) ||
+    null;
+
+  const activeApiKey =
+    apiKey ||
+    (typeof import.meta !== 'undefined' && (import.meta?.env?.VITE_AI_API_KEY || import.meta?.env?.VITE_GROQ_API_KEY)) ||
+    (typeof process !== 'undefined' && (process?.env?.VITE_AI_API_KEY || process?.env?.GROQ_API_KEY)) ||
+    null;
+
+  const activeModel =
+    model && !model.includes('2.0') && !model.includes('2.5')
+      ? model
+      : (typeof import.meta !== 'undefined' && import.meta?.env?.VITE_GEMINI_MODEL) ||
+        (typeof process !== 'undefined' && process?.env?.GEMINI_MODEL) ||
+        (activeBaseUrl ? 'auto-code' : 'gemini-2.0-flash');
+
+  if (activeBaseUrl) {
+    const customRes = await callOpenAi(messages, activeApiKey, activeBaseUrl, activeModel);
     if (customRes?.name) {
       toolCall = customRes;
-    } else if (customRes?.textOnly) {
+    } else if (customRes?.textOnly && !localMatch?.name) {
       return { reply: customRes.textOnly, card: null, sessionState };
     }
   }
 
-  // 2B. Nếu có Gemini API Key trực tiếp
+  // 2B. Tầng 2A: Tự động chuyển sang Groq Cloud (Dành cho máy mẹ hoặc khi 9Router tắt)
+  const groqKey =
+    (apiKey?.startsWith('gsk_') ? apiKey : null) ||
+    (typeof process !== 'undefined' && process?.env?.GROQ_API_KEY) ||
+    (typeof import.meta !== 'undefined' && import.meta?.env?.VITE_GROQ_API_KEY) ||
+    null;
+
+  if (!toolCall && groqKey) {
+    const groqRes = await callOpenAi(messages, groqKey, 'https://api.groq.com/openai/v1', model);
+    if (groqRes?.name) {
+      toolCall = groqRes;
+    } else if (groqRes?.textOnly && !localMatch?.name) {
+      return { reply: groqRes.textOnly, card: null, sessionState };
+    }
+  }
+
+  // 2C. Tầng 2B: Nếu có Gemini API Key trực tiếp
   const geminiKey =
-    (!baseUrl &&
-      ((typeof process !== 'undefined' && (process?.env?.GEMINI_API_KEY || process?.env?.GOOGLE_API_KEY)) ||
-        (typeof import.meta !== 'undefined' && (import.meta?.env?.VITE_GEMINI_API_KEY || import.meta?.env?.VITE_GOOGLE_API_KEY)) ||
-        (apiKey?.startsWith('AIza') ? apiKey : null))) ||
+    (apiKey?.startsWith('AIza') ? apiKey : null) ||
+    (typeof process !== 'undefined' && (process?.env?.GEMINI_API_KEY || process?.env?.GOOGLE_API_KEY)) ||
+    (typeof import.meta !== 'undefined' && (import.meta?.env?.VITE_GEMINI_API_KEY || import.meta?.env?.VITE_GOOGLE_API_KEY)) ||
     null;
 
   const geminiModel =
@@ -298,33 +452,34 @@ export async function processAgentMessage({ messages, sessionState = {}, apiKey 
     (typeof import.meta !== 'undefined' && import.meta?.env?.VITE_GEMINI_MODEL) ||
     'gemini-2.0-flash';
 
-  if (!toolCall && geminiKey) {
+  if (!toolCall && geminiKey && geminiKey.startsWith('AIza')) {
     const geminiRes = await callGemini(messages, geminiKey, geminiModel);
     if (geminiRes?.name) {
       toolCall = geminiRes;
-    } else if (geminiRes?.textOnly) {
+    } else if (geminiRes?.textOnly && !localMatch?.name) {
       return { reply: geminiRes.textOnly, card: null, sessionState };
     }
   }
 
-  // 2C. Nếu có OpenAI API Key trực tiếp
+  // 2D. Tầng 2C: Nếu có OpenAI / OpenRouter API Key trực tiếp
   if (!toolCall && !baseUrl) {
     const openAiKey =
       apiKey ||
       (typeof process !== 'undefined' && process?.env?.OPENAI_API_KEY) ||
       (typeof import.meta !== 'undefined' && import.meta?.env?.VITE_OPENAI_API_KEY) ||
       null;
-    if (openAiKey && !openAiKey.startsWith('AIza')) {
-      const openAiRes = await callOpenAi(messages, openAiKey, null, model);
+    if (openAiKey && !openAiKey.startsWith('AIza') && !openAiKey.startsWith('gsk_')) {
+      const targetBase = openAiKey.startsWith('sk-or-') ? 'https://openrouter.ai/api/v1' : null;
+      const openAiRes = await callOpenAi(messages, openAiKey, targetBase, model);
       if (openAiRes?.name) {
         toolCall = openAiRes;
-      } else if (openAiRes?.textOnly) {
+      } else if (openAiRes?.textOnly && !localMatch?.name) {
         return { reply: openAiRes.textOnly, card: null, sessionState };
       }
     }
   }
 
-  // 2D. Dự phòng ngầm (Offline / Deterministic Fallback)
+  // 2E. Tầng 3: Dự phòng ngầm thông minh (Offline / Deterministic Fallback)
   if (!toolCall) {
     toolCall = localMatch;
   }

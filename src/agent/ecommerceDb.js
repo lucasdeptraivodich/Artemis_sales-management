@@ -499,11 +499,17 @@ export class EcommerceDatabase {
         sale_form: 'Biểu mẫu + Bán Hàng mới',
         expense_form: 'Biểu mẫu + Ghi Chi Tiền'
       };
+      let extraHint = '';
+      if (ui_target === 'sale_form') {
+        extraHint = '\n💡 Mẹo: Anh/chị cũng có thể nhắn thẳng tên món kèm giá (ví dụ: "Thêm đơn trang sức 6 triệu" hoặc "Đã bán 2 áo 300k") để em tự động ghi đơn luôn nhé!';
+      } else if (ui_target === 'expense_form') {
+        extraHint = '\n💡 Mẹo: Anh/chị cũng có thể nhắn thẳng khoản chi kèm số tiền (ví dụ: "Ghi chi tiền điện 500k") để em tự ghi luôn nhé!';
+      }
       return {
         requiresConfirmation: false,
         cardType: 'WEB_ACTION_CARD',
         uiAction: { target: ui_target },
-        message: `🚀 Đã mở mục "${targetLabels[ui_target] || ui_target}" trên màn hình cho anh/chị!`
+        message: `🚀 Đã mở mục "${targetLabels[ui_target] || ui_target}" trên màn hình cho anh/chị!${extraHint}`
       };
     }
 

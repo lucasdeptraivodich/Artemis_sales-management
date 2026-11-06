@@ -285,6 +285,67 @@ describe('🏹 AI AGENT E-COMMERCE CORE & SAFETY RULES', () => {
       assert.strictEqual(res.card.tx.item_name, 'Áo thun');
     });
 
+    test('Khách gõ lệnh ngắn "thêm đơn hàng" -> AI tự động mở biểu mẫu + Bán Hàng mới (sale_form)', async () => {
+      const res = await processAgentMessage({
+        messages: [{ role: 'user', content: 'thêm đơn hàng' }],
+        sessionState: {}
+      });
+
+      assert.strictEqual(res.actionRequired, false);
+      assert.strictEqual(res.card.type, 'WEB_ACTION_CARD');
+      assert.deepStrictEqual(res.uiAction, { target: 'sale_form' });
+      assert.match(res.reply, /Biểu mẫu \+ Bán Hàng mới/);
+    });
+
+    test('Khách gõ "thêm đơn hàng trang sức 6 triệu" hoặc "lên đơn 2 váy 500k" -> Tự động ghi đơn bán', async () => {
+      const res1 = await processAgentMessage({
+        messages: [{ role: 'user', content: 'thêm đơn hàng trang sức 6 triệu' }],
+        sessionState: {}
+      });
+
+      assert.strictEqual(res1.card.type, 'WEB_ACTION_CARD');
+      assert.ok(res1.card.tx);
+      assert.strictEqual(res1.card.tx.type, 'SALE');
+      assert.strictEqual(res1.card.tx.sale_price, 6000000);
+      assert.strictEqual(res1.card.tx.item_name, 'Trang sức');
+
+      const res2 = await processAgentMessage({
+        messages: [{ role: 'user', content: 'lên đơn 2 cái áo 300k' }],
+        sessionState: {}
+      });
+
+      assert.strictEqual(res2.card.type, 'WEB_ACTION_CARD');
+      assert.ok(res2.card.tx);
+      assert.strictEqual(res2.card.tx.sale_price, 300000);
+      assert.strictEqual(res2.card.tx.quantity, 2);
+      assert.strictEqual(res2.card.tx.item_name, 'Áo');
+    });
+
+    test('Khách hỏi tự nhiên "m có thể làm gì", "m làm dc những gì" -> Trả lời thông minh năng lực AI kèm hướng dẫn', async () => {
+      for (const phrase of ['m có thể làm gì', 'm làm dc những gì', 'có thể làm gì', 'bạn có thể làm gì', 'em làm được gì']) {
+        const capRes = await processAgentMessage({
+          messages: [{ role: 'user', content: phrase }],
+          sessionState: {}
+        });
+        assert.match(capRes.reply, /Trợ lý AI Quản lý Toàn diện/);
+        assert.doesNotMatch(capRes.reply, /Em chưa hiểu rõ câu lệnh này/);
+      }
+
+      const revRes = await processAgentMessage({
+        messages: [{ role: 'user', content: 'hôm nay bán được bao nhiêu' }],
+        sessionState: {}
+      });
+      assert.match(revRes.reply, /Báo cáo nhanh tình hình kinh doanh/);
+      assert.doesNotMatch(revRes.reply, /Em chưa hiểu rõ câu lệnh này/);
+
+      const greetRes = await processAgentMessage({
+        messages: [{ role: 'user', content: 'chào em' }],
+        sessionState: {}
+      });
+      assert.match(greetRes.reply, /Dạ em chào Anh\/Chị!/);
+      assert.doesNotMatch(greetRes.reply, /Em chưa hiểu rõ câu lệnh này/);
+    });
+
     test('Khách nhập câu không hiểu -> AI trả lời hướng dẫn cú pháp thân thiện, không lặp lại câu chào ban đầu', async () => {
       const res = await processAgentMessage({
         messages: [{ role: 'user', content: 'alo có ai ở đây không ta' }],

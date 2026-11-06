@@ -49,7 +49,10 @@ export default function AiChatWidget({ onRefresh, showToast, onUiAction }) {
   const [apiKey, setApiKey] = useState(() => {
     try {
       const vaulted = localStorage.getItem(VAULT_KEY);
-      if (vaulted) return decodeApiKey(vaulted);
+      if (vaulted) {
+        const decoded = decodeApiKey(vaulted);
+        if (decoded) return decoded;
+      }
       const legacy = localStorage.getItem(LEGACY_KEY);
       if (legacy) {
         // Tự động chuyển sang vùng lưu trữ mã hóa và xóa bản chữ thuần cũ
@@ -58,7 +61,11 @@ export default function AiChatWidget({ onRefresh, showToast, onUiAction }) {
         return legacy;
       }
       return (
-        (typeof import.meta !== 'undefined' && (import.meta?.env?.VITE_GEMINI_API_KEY || import.meta?.env?.VITE_OPENAI_API_KEY)) ||
+        (typeof import.meta !== 'undefined' &&
+          (import.meta?.env?.VITE_AI_API_KEY ||
+            import.meta?.env?.VITE_GROQ_API_KEY ||
+            import.meta?.env?.VITE_GEMINI_API_KEY ||
+            import.meta?.env?.VITE_OPENAI_API_KEY)) ||
         ''
       );
     } catch (e) {
@@ -67,20 +74,26 @@ export default function AiChatWidget({ onRefresh, showToast, onUiAction }) {
   });
   const [apiBaseUrl, setApiBaseUrl] = useState(() => {
     try {
-      return localStorage.getItem(BASE_URL_KEY) || (typeof import.meta !== 'undefined' && import.meta?.env?.VITE_AI_BASE_URL) || '';
+      const saved = localStorage.getItem(BASE_URL_KEY);
+      if (saved) return saved;
+      return (typeof import.meta !== 'undefined' && import.meta?.env?.VITE_AI_BASE_URL) || 'http://localhost:20128/v1';
     } catch (e) {
-      return '';
+      return 'http://localhost:20128/v1';
     }
   });
   const [selectedModel, setSelectedModel] = useState(() => {
     try {
       const saved = localStorage.getItem('artemis_ai_model');
-      if (saved && !saved.includes('3.8') && !saved.includes('2.5')) return saved;
-      return (typeof import.meta !== 'undefined' && import.meta?.env?.VITE_GEMINI_MODEL) || 'gemini-2.0-flash';
+      if (saved && !saved.includes('2.0') && !saved.includes('2.5')) return saved;
+      if (saved && (saved.includes('2.0') || saved.includes('2.5'))) {
+        localStorage.setItem('artemis_ai_model', 'auto-code');
+      }
+      return (typeof import.meta !== 'undefined' && import.meta?.env?.VITE_GEMINI_MODEL) || 'auto-code';
     } catch (e) {
-      return 'gemini-2.0-flash';
+      return 'auto-code';
     }
   });
+  const [customModels, setCustomModels] = useState([]);
   const [saveToast, setSaveToast] = useState(false);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
@@ -102,6 +115,28 @@ export default function AiChatWidget({ onRefresh, showToast, onUiAction }) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
   }, [messages, isTyping, isOpen]);
+
+  useEffect(() => {
+    const trimmedBase = apiBaseUrl.trim();
+    if (!trimmedBase || !showSettings) return;
+    let cancelled = false;
+    const endpoint = `${trimmedBase.replace(/\/+$/, '')}/models`;
+    const headers = {};
+    if (apiKey.trim()) {
+      headers.Authorization = `Bearer ${apiKey.trim()}`;
+    }
+    fetch(endpoint, { headers })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !Array.isArray(data?.data)) return;
+        const ids = data.data.map((m) => m.id).filter(Boolean);
+        if (ids.length > 0) setCustomModels(ids);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBaseUrl, apiKey, showSettings]);
 
   const handleSend = async (textToSend) => {
     const text = (textToSend || input).trim();
@@ -299,14 +334,27 @@ export default function AiChatWidget({ onRefresh, showToast, onUiAction }) {
                   type="password"
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="Dán AIzaSy... hoặc sk-..."
+                  placeholder="Dán AIzaSy... (Gemini), gsk_... (Groq), hoặc sk-... (9Router)"
                   className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-white focus:outline-none focus:border-emerald-500"
                 />
               </div>
               <div>
-                <label className="text-[10px] text-slate-400 block mb-0.5">
-                  API Base URL <span className="text-cyan-400">(Tùy chọn cho 9Router / Proxy / Ollama)</span>:
-                </label>
+                <div className="flex items-center justify-between mb-0.5">
+                  <label className="text-[10px] text-slate-400">
+                    API Base URL <span className="text-cyan-400">(9Router / Proxy / Ollama)</span>:
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setApiBaseUrl('http://localhost:20128/v1');
+                      setSelectedModel('auto-code');
+                    }}
+                    className="text-[10px] text-cyan-400 hover:underline cursor-pointer"
+                    title="Điền nhanh cấu hình 9Router mặc định ở cổng 20128"
+                  >
+                    ⚡ Dùng 9Router (20128)
+                  </button>
+                </div>
                 <input
                   type="text"
                   value={apiBaseUrl}
@@ -323,12 +371,26 @@ export default function AiChatWidget({ onRefresh, showToast, onUiAction }) {
                     onChange={(e) => setSelectedModel(e.target.value)}
                     className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-white"
                   >
-                    <option value="gemini-2.0-flash">Google Gemini 2.0 Flash (Khuyên dùng - Nhanh & Mới)</option>
-                    <option value="gemini-1.5-flash">Google Gemini 1.5 Flash (Miễn phí & Ổn định)</option>
-                    <option value="gemini-1.5-pro">Google Gemini 1.5 Pro (Thông minh)</option>
-                    <option value="gpt-4o-mini">OpenAI GPT-4o-mini</option>
-                    <option value="claude-3-5-sonnet">Claude 3.5 Sonnet (qua 9Router)</option>
-                    <option value="deepseek-chat">DeepSeek V3 (qua 9Router)</option>
+                    <optgroup label="Mặc định & 9Router Phổ biến">
+                      <option value="gemini-2.0-flash">Google Gemini 2.0 Flash (Trực tiếp)</option>
+                      <option value="gemini-1.5-flash">Google Gemini 1.5 Flash (Trực tiếp)</option>
+                      <option value="gemini-1.5-pro">Google Gemini 1.5 Pro (Trực tiếp)</option>
+                      <option value="auto-code">9Router: auto-code (Tự động chọn model)</option>
+                      <option value="ag/gemini-3.8-flash">9Router: ag/gemini-3.8-flash</option>
+                      <option value="gemini/gemini-3.8-flash">9Router: gemini/gemini-3.8-flash</option>
+                      <option value="ds/deepseek-chat">9Router: ds/deepseek-chat (DeepSeek)</option>
+                      <option value="groq/llama-3.3-70b-versatile">9Router: groq/llama-3.3-70b</option>
+                      <option value="gpt-4o-mini">OpenAI GPT-4o-mini</option>
+                    </optgroup>
+                    {customModels.length > 0 && (
+                      <optgroup label={`Model từ Proxy (${customModels.length})`}>
+                        {customModels.map((mId) => (
+                          <option key={mId} value={mId}>
+                            {mId}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
                   </select>
                 </div>
                 <div className="flex items-end">

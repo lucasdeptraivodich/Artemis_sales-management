@@ -1,11 +1,13 @@
 /**
  * System Prompt & Deterministic Intent Matcher for AI Agent
  */
+import { getRevenueReportData, getDebtSummary, getItems } from '../store.js';
+
 export const SYSTEM_PROMPT = `Bạn là Trợ lý AI Quản lý Toàn diện của hệ thống Artemis (Quản lý Bán hàng, Sổ nợ & Dòng tiền).
 Bạn có toàn quyền hỗ trợ người dùng thao tác MỌI TÍNH NĂNG trên trang web thông qua các công cụ:
 1. get_order_status: Tra cứu thông tin và tình trạng đơn hàng (ví dụ: ORD-1001).
-2. create_order: Tạo đơn hàng mới có xác nhận (Human-in-the-loop).
-3. update_order: Đổi địa chỉ, số lượng hoặc hủy đơn hàng lẻ.
+2. create_order: Tạo đơn hàng giao vận mới có xác nhận (Human-in-the-loop) khi có SĐT và địa chỉ giao hàng.
+3. update_order: Đổi địa chỉ, số lượng hoặc hủy đơn hàng lẻ (mã ORD-...).
 4. cancel_bulk_orders: Xóa/hủy hàng loạt đơn hàng theo tháng hoặc khoảng thời gian.
 5. clear_debts: Xóa hết nợ / tất toán công nợ trong Sổ Nợ (xóa toàn bộ nợ chưa thu về 0đ hoặc xóa/thu nợ từng khách).
 6. manage_web_store:
@@ -15,12 +17,38 @@ Bạn có toàn quyền hỗ trợ người dùng thao tác MỌI TÍNH NĂNG tr
    - upsert_item: Thêm món hàng mới hoặc cập nhật giá bán / tồn kho.
    - settle_all_cod: Thu hết tiền các đơn Ship COD đang chờ.
    - navigate_ui: Mở bất kỳ trang/cửa sổ nào trên web (home, history, debt, cod, cashflow, report, items, backup, sale_form, expense_form).
+   - query_weekday_report: Xem báo cáo thu chi theo thứ trong tuần.
 
 QUY TẮC AN TOÀN & THÔNG MINH:
-- CHÚ Ý ĐIỀU HƯỚNG: Chỉ gọi navigate_ui khi người dùng THỰC SỰ MUỐN MỞ TRANG (ví dụ: "mở sổ nợ", "xem báo cáo"). Tuyệt đối KHÔNG gọi navigate_ui khi người dùng muốn ghi nợ, đổi đơn sang nợ, sửa đơn, hoặc thao tác dữ liệu.
+- CHÚ Ý ĐIỀU HƯỚNG: Chỉ gọi navigate_ui khi người dùng THỰC SỰ MUỐN MỞ TRANG (ví dụ: "mở sổ nợ", "xem báo cáo", hoặc chỉ nói ngắn gọn "thêm đơn hàng" mà chưa có tên món/giá tiền). Tuyệt đối KHÔNG gọi navigate_ui khi người dùng muốn ghi nợ, đổi đơn sang nợ, sửa đơn, hoặc ghi bán hàng có số tiền.
 - XỬ LÝ NGÀY THÁNG: Nhận diện thời gian người dùng nói (ví dụ: "hôm qua", "ngày 5/11", "ngày 02/11/2026") và truyền vào tham số created_at dạng ISO 8601.
 - Với thao tác nhạy cảm (tạo đơn, sửa/hủy đơn, xóa hàng loạt đơn, xóa sổ nợ), luôn gọi tool để hiển thị bảng xác nhận trước khi ghi vào DB.
-- Luôn xưng "Em" và gọi người dùng là "Anh/Chị", trả lời ngắn gọn, thông minh và chủ động.`;
+- Khi người dùng trò chuyện tự nhiên, hỏi thăm (ví dụ: "m làm dc những gì", "hôm nay bán được nhiêu", "tư vấn giúp chị"...), hãy trả lời thật tự nhiên, thân thiện, thông minh như một người trợ lý thực thụ. Luôn xưng "Em" và gọi người dùng là "Anh/Chị".`;
+
+export function buildLiveStoreContext() {
+  try {
+    const todayStats = getRevenueReportData('today')?.totals || {};
+    const monthStats = getRevenueReportData('month')?.totals || {};
+    const debtInfo = getDebtSummary() || { totalDebt: 0, owingCount: 0, customers: [] };
+    const items = getItems() || [];
+    const fmt = (n) => new Intl.NumberFormat('vi-VN').format(Math.round(Number(n) || 0)) + 'đ';
+
+    const owingNames = (debtInfo.customers || [])
+      .slice(0, 5)
+      .map((c) => `${c.name} (${fmt(c.totalDebt)})`)
+      .join(', ');
+
+    return (
+      `\n\n[DỮ LIỆU CỬA HÀNG THỜI GIAN THỰC HIỆN TẠI]:\n` +
+      `- Hôm nay: ${todayStats.orderCount || 0} đơn bán, Doanh thu ${fmt(todayStats.revenue)}, Thực thu ${fmt(todayStats.actualIncome)}, Chi phí ${fmt(todayStats.expense)}, Lợi nhuận ròng ${fmt(todayStats.netProfit)}.\n` +
+      `- Tháng này: ${monthStats.orderCount || 0} đơn bán, Tổng doanh thu ${fmt(monthStats.revenue)}, Thực thu ${fmt(monthStats.actualIncome)}, Chi phí & Vốn ${fmt(monthStats.costAndExpense)}, Lợi nhuận ròng ${fmt(monthStats.netProfit)}.\n` +
+      `- Công nợ chưa thu: ${fmt(debtInfo.totalDebt)} (${debtInfo.owingCount || 0} khách đang nợ${owingNames ? ': ' + owingNames : ''}).\n` +
+      `- Số mặt hàng trong danh mục: ${items.length} món.`
+    );
+  } catch (e) {
+    return '';
+  }
+}
 
 export function parseVietnameseMoney(text) {
   if (!text) return 0;
@@ -266,7 +294,7 @@ function extractSaleDetails(text) {
   // 1. Số lượng
   let quantity = 1;
   const qtyMatch =
-    text.match(/(?:bán|đơn|lấy|mua)\s+(\d+)\s*(?:cái|chiếc|bộ|đôi|hộp|thỏi|cây|túi|áo|quần|đơn|vé|ly|chén|chai|hũ|tuýp)?\b/i) ||
+    text.match(/(?:bán|đơn|lấy|mua|thêm|lên|nhập)\s+(\d+)\s*(?:cái|chiếc|bộ|đôi|hộp|thỏi|cây|túi|áo|quần|đơn|vé|ly|chén|chai|hũ|tuýp)?\b/i) ||
     text.match(/\b(\d+)\s*(?:cái|chiếc|bộ|đôi|hộp|thỏi|cây|túi|áo|quần|vé|ly|chai|hũ|tuýp)\b/i);
   if (qtyMatch && parseInt(qtyMatch[1], 10) > 0) {
     quantity = parseInt(qtyMatch[1], 10);
@@ -286,7 +314,7 @@ function extractSaleDetails(text) {
   // 4. Bóc tách tên món hàng (item_name)
   let cleaned = removeVietnameseDate(text)
     // Bỏ tiền tố hành động
-    .replace(/^.*?(?:ghi bán hàng|ghi đơn bán|ghi nhận bán|bán hàng|ghi bán|đã bán|vừa bán|bán lẻ|bán)\s*[:\-\s]*/i, '')
+    .replace(/^.*?(?:ghi bán hàng|ghi đơn bán|ghi đơn hàng|ghi nhận bán|thêm đơn hàng|thêm đơn bán|thêm đơn|lên đơn hàng|lên đơn|nhập đơn hàng|nhập đơn|tạo đơn hàng|tạo đơn bán|bán hàng|ghi bán|đã bán|vừa bán|bán lẻ|ghi đơn|bán)\s*[:\-\s]*/i, '')
     // Bỏ từ chỉ đơn hàng
     .replace(/(?:đã bán|vừa bán|một đơn|1 đơn|đơn hàng|đơn bán|đơn)/gi, '')
     // Bỏ cụm từ giá tiền
@@ -486,6 +514,26 @@ export function simulateLlmToolCalling(lastUserMessage) {
   }
 
   // 0B. ĐIỀU HƯỚNG GIAO DIỆN & MỞ CỬA SỔ TRÊN WEB
+  // Kiểm tra lệnh ngắn mở trực tiếp form Bán Hàng hoặc form Ghi Chi (khi chưa kèm số tiền/tên món cụ thể)
+  const isBareSaleFormCmd =
+    /^(?:thêm|tạo|lên|nhập|ghi|mở|bật)?\s*(?:form\s+|biểu\s*mẫu\s+|cửa\s*sổ\s+)?(?:đơn\s*hàng|đơn\s*bán|đơn\s*mới|bán\s*hàng|ghi\s*bán)(?:\s+mới)?[.,!?\s]*$/iu.test(
+      lower
+    ) ||
+    /^(?:thêm|tạo|lên|nhập)\s+đơn[.,!?\s]*$/iu.test(lower);
+
+  if (isBareSaleFormCmd && parseVietnameseMoney(text) === 0 && !orderIdMatch) {
+    return { name: 'manage_web_store', args: { operation: 'navigate_ui', ui_target: 'sale_form' } };
+  }
+
+  const isBareExpenseFormCmd =
+    /^(?:thêm|tạo|nhập|ghi|mở|bật)?\s*(?:form\s+|biểu\s*mẫu\s+|cửa\s*sổ\s+)?(?:khoản\s*chi|chi\s*tiêu|chi\s*phí|ghi\s*chi|chi\s*tiền)(?:\s+mới)?[.,!?\s]*$/iu.test(
+      lower
+    );
+
+  if (isBareExpenseFormCmd && parseVietnameseMoney(text) === 0 && !orderIdMatch) {
+    return { name: 'manage_web_store', args: { operation: 'navigate_ui', ui_target: 'expense_form' } };
+  }
+
   if (
     lower.includes('mở') ||
     lower.includes('xem') ||
@@ -518,17 +566,29 @@ export function simulateLlmToolCalling(lastUserMessage) {
     if (lower.includes('sao lưu') || lower.includes('backup')) {
       return { name: 'manage_web_store', args: { operation: 'navigate_ui', ui_target: 'backup' } };
     }
+    if (lower.includes('bán hàng') || lower.includes('form bán') || lower.includes('thêm đơn')) {
+      return { name: 'manage_web_store', args: { operation: 'navigate_ui', ui_target: 'sale_form' } };
+    }
+    if (lower.includes('ghi chi') || lower.includes('khoản chi') || lower.includes('chi tiêu')) {
+      return { name: 'manage_web_store', args: { operation: 'navigate_ui', ui_target: 'expense_form' } };
+    }
     if (lower.includes('trang chủ') || lower.includes('dashboard')) {
       return { name: 'manage_web_store', args: { operation: 'navigate_ui', ui_target: 'home' } };
     }
   }
 
   // 0C. GHI CHI PHÍ / CHI TIỀN TRỰC TIẾP LÊN WEB
-  if (lower.includes('ghi chi') || lower.includes('chi tiền') || lower.includes('khoản chi') || /^chi\s+\d+/i.test(lower)) {
+  if (
+    lower.includes('ghi chi') ||
+    lower.includes('chi tiền') ||
+    lower.includes('khoản chi') ||
+    lower.includes('thêm chi') ||
+    /^chi\s+\d+/i.test(lower)
+  ) {
     const amount = parseVietnameseMoney(text);
     const customDate = parseVietnameseDate(text);
     const cleanedName = removeVietnameseDate(text)
-      .replace(/ghi chi|chi tiền|khoản chi|chi/gi, '')
+      .replace(/thêm khoản chi|thêm chi phí|thêm chi|ghi chi|chi tiền|khoản chi|chi/gi, '')
       .replace(/\d+(?:[.,]\d+)?\s*(?:triệu|trieu|tr|m|củ|cu|nghìn|nghin|ngàn|ngan|k|xị|xi|đ|đồng|dong|vnd)?\b/gi, '')
       .replace(/\d{1,3}(?:[.,]\d{3})+\b/g, '')
       .replace(/[:,\-\.\/]/g, ' ')
@@ -546,6 +606,11 @@ export function simulateLlmToolCalling(lastUserMessage) {
   }
 
   // 0C2. GHI BÁN HÀNG / BÁN HÀNG NHANH LÊN DASHBOARD
+  const hasPhoneOrAddress = /(0\d{9}|\+84\d{9})/.test(text) || /(?:giao đến|địa chỉ)/i.test(lower);
+  const isQuestionAboutSales =
+    /(?:bao\s*nhiêu|được\s*nhiêu|dc\s*nhiêu|đc\s*nhiêu|mấy\s*đơn|những\s*gì|bán\s*gì|thế\s*nào|sao\s*rồi|\?)/iu.test(
+      lower
+    );
   const isSaleIntent =
     (lower.includes('ghi bán') ||
       lower.includes('bán ') ||
@@ -554,11 +619,22 @@ export function simulateLlmToolCalling(lastUserMessage) {
       lower.includes('vừa bán') ||
       lower.includes('bán được') ||
       lower.includes('ghi đơn bán') ||
+      lower.includes('ghi đơn hàng') ||
+      lower.includes('ghi đơn') ||
       lower.includes('ghi nhận bán') ||
+      lower.includes('thêm đơn hàng') ||
+      lower.includes('thêm đơn bán') ||
+      lower.includes('thêm đơn') ||
+      lower.includes('lên đơn hàng') ||
+      lower.includes('lên đơn') ||
+      lower.includes('nhập đơn hàng') ||
+      lower.includes('nhập đơn') ||
       lower.includes('bán lẻ') ||
-      /^(?:bán|đã bán|vừa bán)\s+/i.test(lower)) &&
+      /^(?:bán|đã bán|vừa bán|thêm đơn|lên đơn|nhập đơn)\s+/i.test(lower)) &&
     !hasDeleteOrCancelVerb &&
-    !orderIdMatch;
+    !orderIdMatch &&
+    !hasPhoneOrAddress &&
+    !isQuestionAboutSales;
 
   if (isSaleIntent) {
     const sale = extractSaleDetails(text);
@@ -744,6 +820,126 @@ export function simulateLlmToolCalling(lastUserMessage) {
         delivery_address: address,
         note: 'Giao hàng giờ hành chính'
       }
+    };
+  }
+
+  // 6. HỘI THOẠI TỰ NHIÊN & TRẢ LỜI THÔNG MINH KHI OFFLINE (Hỏi khả năng, hỏi doanh thu/lợi nhuận/công nợ, cảm ơn...)
+  const isCapabilityQuestion =
+    /(?:(?:m|mày|em|bạn|bot)?\s*(?:có\s*thể|biết)?\s*(?:làm|giúp|hỗ\s*trợ)\s*(?:được|dc|đc|những\s*gì)?\s*(?:gì|những\s*gì|được\s*gì|chi\s*tiết)?|bạn\s*là\s*ai|em\s*là\s*ai|m\s*là\s*ai|mày\s*là\s*ai|ai\s*đây|chức\s*năng|tính\s*năng|hướng\s*dẫn|cách\s*dùng|cách\s*sử\s*dụng|tác\s*dụng\s*gì|help|trợ\s*giúp)/iu.test(
+      lower
+    ) ||
+    /^(?:làm\s*gì|giúp\s*gì|hỗ\s*trợ\s*gì|có\s*gì|tính\s*năng\s*gì)[.,!?\s]*$/iu.test(lower);
+
+  if (isCapabilityQuestion) {
+    return {
+      textOnly:
+        'Dạ, em là **Trợ lý AI Quản lý Toàn diện của Artemis** 🤖. Anh/chị có thể nói chuyện tự nhiên với em để thực hiện mọi việc trên web:\n\n' +
+        '1. 🛒 **Ghi bán hàng nhanh**: *"Bán trang sức 6 triệu"*, *"Thêm đơn 2 áo 300k"*, hoặc gõ *"Thêm đơn hàng"* để mở bảng nhập.\n' +
+        '2. 💸 **Quản lý Sổ Nợ**: *"Đức nợ 6 triệu"*, *"Chuyển đơn vừa rồi sang nợ"*, *"Thu hết nợ"*, *"Xóa hết nợ tháng 11"*.\n' +
+        '3. 🧾 **Ghi chi tiêu**: *"Ghi chi tiền điện 500k"*, *"Chi 200k mua túi đóng hàng hôm qua"*.\n' +
+        '4. 📊 **Báo cáo & Điều hướng**: *"Hôm nay bán được bao nhiêu?"*, *"Thứ 2 bán được gì?"*, *"Mở dòng tiền"*, *"Mở sổ nợ"*.'
+    };
+  }
+
+  const isGreeting =
+    /^(?:chào|chào\s+em|chào\s+bạn|chào\s+ad|xin\s+chào|hello|hi|hi\s+em|alo|alo\s+em|em\s*ơi|ad\s*ơi|ơi)[.,!?\s]*$/iu.test(
+      lower
+    );
+
+  if (isGreeting) {
+    return {
+      textOnly:
+        'Dạ em chào Anh/Chị! 👋 Em là Trợ lý AI Artemis. Em có thể hỗ trợ Anh/Chị:\n' +
+        '• Ghi đơn bán hàng nhanh (*"Bán trang sức 6 triệu"*, *"Đã bán 2 áo 300k"*)\n' +
+        '• Ghi khoản chi tiêu (*"Ghi chi tiền điện 500k"*)\n' +
+        '• Quản lý Sổ Nợ (*"Đức nợ 6 triệu"*, *"Chuyển sang nợ"*, *"Mở sổ nợ"*)\n' +
+        '• Báo cáo & điều hướng (*"Hôm nay bán được bao nhiêu"*, *"Mở dòng tiền"*).\n\n' +
+        'Anh/chị cần em hỗ trợ việc gì ngay bây giờ ạ? 😊'
+    };
+  }
+
+  const isItemsListQuestion =
+    /(?:trong\s*kho|danh\s*sách\s*món|danh\s*sách\s*sản\s*phẩm|kho\s*hàng|có\s*(?:những\s*)?(?:món|sản\s*phẩm|mặt\s*hàng)\s*nào|kiểm\s*tra\s*(?:kho|hàng))/iu.test(
+      lower
+    );
+
+  if (isItemsListQuestion && parseVietnameseMoney(text) === 0) {
+    try {
+      const items = getItems() || [];
+      const fmt = (n) => new Intl.NumberFormat('vi-VN').format(Math.round(Number(n) || 0)) + 'đ';
+      if (items.length === 0) {
+        return {
+          textOnly:
+            '📦 Hiện tại trong danh mục chưa có món hàng nào. Anh/chị có thể nói ví dụ: *"Thêm món Áo thun giá 150k vốn 90k tồn kho 50 cái"* để em tạo nhé!'
+        };
+      }
+      const list = items
+        .slice(0, 10)
+        .map(
+          (it, idx) =>
+            `${idx + 1}. **${it.name}** — Giá bán: **${fmt(it.price || it.sale_price || 0)}** (Tồn kho: ${it.stock ?? it.quantity ?? 0})`
+        )
+        .join('\n');
+      return {
+        textOnly: `📦 **Danh sách mặt hàng trong kho (${items.length} món):**\n${list}${
+          items.length > 10 ? '\n*(và còn ' + (items.length - 10) + ' món khác)*' : ''
+        }`
+      };
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  const isRevenueStatusQuestion =
+    /(?:doanh\s*thu|lợi\s*nhuận|lãi\s*(?:bao\s*nhiêu|được\s*nhiêu)|bán\s*(?:được|dc|đc)\s*(?:bao\s*nhiêu|nhiêu)|tình\s*hình\s*(?:buôn\s*bán|kinh\s*doanh|bán\s*hàng|hôm\s*nay|tháng\s*này)|tổng\s*kết\s*(?:thu\s*chi|doanh\s*thu|hôm\s*nay))/iu.test(
+      lower
+    );
+
+  if (isRevenueStatusQuestion) {
+    try {
+      const todayStats = getRevenueReportData('today')?.totals || {};
+      const monthStats = getRevenueReportData('month')?.totals || {};
+      const debtInfo = getDebtSummary() || { totalDebt: 0, owingCount: 0 };
+      const fmt = (n) => new Intl.NumberFormat('vi-VN').format(Math.round(Number(n) || 0)) + 'đ';
+
+      return {
+        textOnly:
+          `📊 **Báo cáo nhanh tình hình kinh doanh của Anh/Chị:**\n\n` +
+          `• **Hôm nay:** ${todayStats.orderCount || 0} đơn — Doanh thu **${fmt(todayStats.revenue)}** | Thực thu **${fmt(todayStats.actualIncome)}** | Chi phí **${fmt(todayStats.expense)}** | Lợi nhuận: **${fmt(todayStats.netProfit)}**\n` +
+          `• **Tháng này:** ${monthStats.orderCount || 0} đơn — Tổng doanh thu **${fmt(monthStats.revenue)}** | Thực thu **${fmt(monthStats.actualIncome)}** | Lợi nhuận ròng: **${fmt(monthStats.netProfit)}**\n` +
+          `• **Nợ chưa thu:** **${fmt(debtInfo.totalDebt)}** (${debtInfo.owingCount || 0} khách nợ).`
+      };
+    } catch (e) {
+      // ignore and fall through
+    }
+  }
+
+  const isWhoOwesQuestion =
+    /(?:ai\s*(?:đang\s*)?nợ|khách\s*nào\s*(?:đang\s*)?nợ|nợ\s*bao\s*nhiêu|tổng\s*nợ\s*(?:hiện\s*tại|bao\s*nhiêu)|kiểm\s*tra\s*công\s*nợ)/iu.test(
+      lower
+    );
+
+  if (isWhoOwesQuestion) {
+    try {
+      const debtInfo = getDebtSummary() || { totalDebt: 0, owingCount: 0, customers: [] };
+      const fmt = (n) => new Intl.NumberFormat('vi-VN').format(Math.round(Number(n) || 0)) + 'đ';
+      if (!debtInfo.owingCount || debtInfo.totalDebt <= 0) {
+        return { textOnly: '🎉 Hiện tại Sổ Nợ hoàn toàn sạch sẽ (**0đ**), không có khách hàng nào đang nợ ạ!' };
+      }
+      const list = (debtInfo.customers || [])
+        .map((c, idx) => `${idx + 1}. **${c.name}**: nợ **${fmt(c.totalDebt)}**`)
+        .join('\n');
+      return {
+        textOnly: `📒 Hiện có **${debtInfo.owingCount} khách hàng** đang nợ tổng cộng **${fmt(debtInfo.totalDebt)}**:\n${list}`
+      };
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  if (/^(?:cảm\s*ơn|cam\s*on|thanks|thank\s*you|tuyệt\s*vời|giỏi\s*quá|hay\s*quá)(?:\s+em|\s+nhé|\s+nha)?[.,!?\s]*$/iu.test(lower)) {
+    return {
+      textOnly: 'Dạ không có gì ạ! Cần ghi đơn, ghi chi tiêu hay kiểm tra sổ sách gì thêm anh/chị cứ nhắn em nhé! ❤️'
     };
   }
 
