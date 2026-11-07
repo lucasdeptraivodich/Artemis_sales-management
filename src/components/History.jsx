@@ -58,28 +58,39 @@ export default function History({ onRefresh, showToast, onEdit, onOpenReport }) 
   const summary = useMemo(() => {
     let income = 0;
     let expense = 0;
-    let pendingDebt = 0;
+    let rawDebt = 0;
+    let debtPaid = 0;
+    let pendingCod = 0;
     filteredTransactions.forEach((tx) => {
       const price = Number(tx.sale_price) || 0;
       if (tx.type === 'EXPENSE') {
         expense += price;
       } else if (tx.type === 'DEBT_PAYMENT') {
         income += price;
+        debtPaid += price;
       } else if (tx.type === 'SALE') {
         if (tx.payment_method === 'CASH_TRANSFER') {
-          income += price;
+          const partialDebt =
+            tx.remaining_debt !== undefined && tx.remaining_debt > 0
+              ? Number(tx.remaining_debt) || 0
+              : tx.customer_paid !== undefined && tx.customer_paid !== null && tx.customer_paid !== '' && Number(tx.customer_paid) < price
+              ? Math.max(0, price - (Number(tx.customer_paid) || 0))
+              : 0;
+          income += Math.max(0, price - partialDebt);
+          rawDebt += partialDebt;
         } else if (tx.payment_method === 'COD') {
           if (tx.is_cod_received) {
             income += price;
           } else {
-            pendingDebt += price;
+            pendingCod += price;
           }
         } else if (tx.payment_method === 'DEBT') {
-          pendingDebt += price;
+          rawDebt += price;
         }
       }
     });
-    return { count: filteredTransactions.length, income, expense, pendingDebt };
+    const pendingDebt = Math.max(0, rawDebt - debtPaid);
+    return { count: filteredTransactions.length, income, expense, pendingDebt, pendingCod };
   }, [filteredTransactions]);
 
   const handleDelete = (id) => {

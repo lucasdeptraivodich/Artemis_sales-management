@@ -13,17 +13,18 @@ function getCarrierTrackingUrl(code) {
   if (!code) return null;
   const cleanCode = code.trim();
   const upper = cleanCode.toUpperCase();
+  const encodedCode = encodeURIComponent(cleanCode);
 
   if (upper.startsWith('VTP') || upper.startsWith('VT') || /^\d{10,12}$/.test(cleanCode)) {
-    return `https://viettelpost.com.vn/tra-cuu-hanh-trinh-don-hang/?tracking=${cleanCode}`;
+    return `https://viettelpost.com.vn/tra-cuu-hanh-trinh-don-hang/?tracking=${encodedCode}`;
   }
   if (upper.startsWith('GHN') || cleanCode.length === 8) {
-    return `https://donhang.ghn.vn/?order_code=${cleanCode}`;
+    return `https://donhang.ghn.vn/?order_code=${encodedCode}`;
   }
   if (upper.startsWith('S') || upper.startsWith('B') || upper.includes('GHTK')) {
-    return `https://giaohangtietkiem.vn/tra-cuu-van-don/?code=${cleanCode}`;
+    return `https://giaohangtietkiem.vn/tra-cuu-van-don/?code=${encodedCode}`;
   }
-  return `https://www.google.com/search?q=tra+c%E1%BB%A9u+v%E1%BA%ADn+%C4%91%C6%A1n+${encodeURIComponent(cleanCode)}`;
+  return `https://www.google.com/search?q=tra+c%E1%BB%A9u+v%E1%BA%ADn+%C4%91%C6%A1n+${encodedCode}`;
 }
 
 export default function CodManager({ onRefresh, showToast, onEditOrder }) {

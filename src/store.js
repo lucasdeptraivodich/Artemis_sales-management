@@ -73,6 +73,9 @@ function notifySyncStatus(status) {
 }
 
 function generateId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
   return Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
 }
 
@@ -244,9 +247,20 @@ export async function syncAllFromCloud() {
 
     if (itemsError) throw itemsError;
 
-    // Update local store with remote data if exists
+    // Update local store with remote data if exists (bảo toàn các trường mở rộng như stock, quantity, unit_price nếu cloud chưa có cột)
     if (remoteTransactions && remoteTransactions.length > 0) {
-      saveTransactions(remoteTransactions);
+      const localTxMap = new Map(getTransactions().map((t) => [t.id, t]));
+      const mergedTxs = remoteTransactions.map((rt) => {
+        const local = localTxMap.get(rt.id) || {};
+        return {
+          ...local,
+          ...rt,
+          quantity: rt.quantity !== undefined && rt.quantity !== null ? rt.quantity : (local.quantity ?? 1),
+          unit_price: rt.unit_price !== undefined && rt.unit_price !== null ? rt.unit_price : local.unit_price,
+          unit_cost: rt.unit_cost !== undefined && rt.unit_cost !== null ? rt.unit_cost : local.unit_cost,
+        };
+      });
+      saveTransactions(mergedTxs);
     }
 
     if (remoteCustomers && remoteCustomers.length > 0) {
@@ -254,7 +268,16 @@ export async function syncAllFromCloud() {
     }
 
     if (remoteItems && remoteItems.length > 0) {
-      const itemsWithoutKhac = remoteItems.filter((i) => i.name !== 'Khác...');
+      const localItemMap = new Map(getItems().map((i) => [i.id, i]));
+      const itemsWithoutKhac = remoteItems
+        .filter((i) => i.name !== 'Khác...')
+        .map((ri) => {
+          const local = localItemMap.get(ri.id);
+          return {
+            ...ri,
+            stock: ri.stock !== undefined ? ri.stock : (local?.stock ?? null),
+          };
+        });
       itemsWithoutKhac.push({ id: 'default-8', name: 'Khác...', default_price: 0, default_cost: 0 });
       saveItems(itemsWithoutKhac);
     } else if (getItems().length === 0) {
@@ -507,8 +530,12 @@ export function deductStock(itemName, quantity) {
   const normalized = itemName.trim().toLowerCase();
   const idx = items.findIndex((i) => (i.name || '').trim().toLowerCase() === normalized);
   if (idx !== -1 && items[idx].stock !== undefined && items[idx].stock !== null) {
-    const { newStock } = calculateStockChange(items[idx].stock, quantity, 'DEDUCT');
-    items[idx] = { ...items[idx], stock: newStock };
+    const { newStock, isOutOfStock } = calculateStockChange(items[idx].stock, quantity, 'DEDUCT');
+    items[idx] = {
+      ...items[idx],
+      stock: Math.max(0, newStock),
+      last_out_of_stock: isOutOfStock,
+    };
     saveItems(items);
     pushItemToCloud(items[idx]);
     return items[idx];
@@ -552,14 +579,78 @@ export function getTransactionById(id) {
   return transactions.find((t) => t.id === id) || null;
 }
 
+/**
+ * Tính số tiền nợ phát sinh trên 1 đơn bán hàng:
+ * - Nếu payment_method === 'DEBT': nợ toàn bộ sale_price (hoặc remaining_debt nếu khách trả trước 1 phần).
+ * - Nếu payment_method === 'CASH_TRANSFER' và khách đưa thiếu (customer_paid < sale_price): nợ phần thiếu.
+ */
+function getTransactionDebtAmount(tx) {
+  if (!tx || tx.type !== 'SALE') return 0;
+  const price = Math.max(0, roundMoney(tx.sale_price));
+  if (tx.payment_method === 'DEBT') {
+    return price;
+  }
+  if (
+    tx.payment_method === 'CASH_TRANSFER' &&
+    tx.customer_paid !== undefined &&
+    tx.customer_paid !== null &&
+    tx.customer_paid !== '' &&
+    roundMoney(tx.customer_paid) < price
+  ) {
+    return Math.max(0, price - Math.max(0, roundMoney(tx.customer_paid)));
+  }
+  return 0;
+}
+
+/**
+ * Tính số tiền mặt / chuyển khoản thực thu trên 1 đơn bán hàng
+ */
+function getTransactionCashCollected(tx) {
+  if (!tx || tx.type !== 'SALE') return 0;
+  const price = Math.max(0, roundMoney(tx.sale_price));
+  if (tx.payment_method === 'CASH_TRANSFER') {
+    const debtOnTx = getTransactionDebtAmount(tx);
+    return Math.max(0, price - debtOnTx);
+  }
+  return 0;
+}
+
+/**
+ * Tính doanh thu hàng hóa thuần của đơn bán (trước Thuế VAT & Phí Ship thu hộ)
+ * Không cộng nhầm tiền ship của bưu điện hoặc tiền thuế VAT vào Lợi nhuận của cửa hàng
+ */
+function getNetMerchandiseRevenue(tx) {
+  if (!tx || tx.type !== 'SALE') return 0;
+  const price = Math.max(0, roundMoney(tx.sale_price));
+  const taxAmt = Math.max(0, roundMoney(tx.tax_amount));
+  const shipAmt = Math.max(0, roundMoney(tx.shipping_fee));
+  if (tx.effective_subtotal !== undefined && tx.effective_subtotal !== null) {
+    return Math.max(0, roundMoney(tx.effective_subtotal));
+  }
+  return Math.max(0, price - taxAmt - shipAmt);
+}
+
 export function addTransaction(tx) {
   const transactions = [...getTransactions()];
   const salePrice = Math.max(0, roundMoney(tx.sale_price));
   const costPrice = Math.max(0, roundMoney(tx.cost_price));
   const shippingFee = Math.max(0, roundMoney(tx.shipping_fee));
+  const taxAmount = Math.max(0, roundMoney(tx.tax_amount));
+  const discountAmount = Math.max(0, roundMoney(tx.discount_amount));
   const quantity = cleanQuantity(tx.quantity, 1);
-  const unitPrice = tx.unit_price !== undefined ? Math.max(0, roundMoney(tx.unit_price)) : (quantity > 1 ? Math.round(salePrice / quantity) : salePrice);
-  const unitCost = tx.unit_cost !== undefined ? Math.max(0, roundMoney(tx.unit_cost)) : (quantity > 1 ? Math.round(costPrice / quantity) : costPrice);
+  const baseSaleBeforeShipTax = Math.max(0, salePrice - shippingFee - taxAmount + discountAmount);
+  const unitPrice =
+    tx.unit_price !== undefined
+      ? Math.max(0, roundMoney(tx.unit_price))
+      : quantity > 1
+      ? Math.round(baseSaleBeforeShipTax / quantity)
+      : baseSaleBeforeShipTax;
+  const unitCost =
+    tx.unit_cost !== undefined
+      ? Math.max(0, roundMoney(tx.unit_cost))
+      : quantity > 1
+      ? Math.round(costPrice / quantity)
+      : costPrice;
 
   const newTx = {
     ...tx,
@@ -575,12 +666,23 @@ export function addTransaction(tx) {
     created_at: tx.created_at || new Date().toISOString(),
   };
 
+  if (newTx.type === 'SALE') {
+    const debtAmt = getTransactionDebtAmount(newTx);
+    if (debtAmt > 0) {
+      newTx.remaining_debt = debtAmt;
+      if (newTx.payment_method === 'CASH_TRANSFER' && !newTx.customer_name) {
+        newTx.customer_name = 'Khách nợ';
+      }
+    }
+  }
+
   transactions.unshift(newTx);
   saveTransactions(transactions);
 
   if (newTx.type === 'SALE') {
-    if (newTx.payment_method === 'DEBT' && newTx.customer_name) {
-      addOrUpdateCustomerDebt(newTx.customer_name, newTx.customer_phone || '', newTx.sale_price);
+    const debtAmt = getTransactionDebtAmount(newTx);
+    if (debtAmt > 0 && newTx.customer_name) {
+      addOrUpdateCustomerDebt(newTx.customer_name, newTx.customer_phone || '', debtAmt);
     }
     if (newTx.item_name) {
       deductStock(newTx.item_name, newTx.quantity || 1);
@@ -611,28 +713,29 @@ export function updateTransaction(id, updates) {
     quantity: quantity,
   };
 
-  // Cập nhật công nợ nếu có thay đổi
-  const oldWasDebt = oldTx.type === 'SALE' && oldTx.payment_method === 'DEBT';
-  const newIsDebt = newTx.type === 'SALE' && newTx.payment_method === 'DEBT';
+  // Cập nhật công nợ nếu có thay đổi (hỗ trợ cả đơn DEBT và đơn CASH_TRANSFER trả thiếu)
+  const oldDebtAmt = getTransactionDebtAmount(oldTx);
+  const newDebtAmt = getTransactionDebtAmount(newTx);
+  newTx.remaining_debt = newDebtAmt;
 
-  if (oldWasDebt && newIsDebt) {
+  if (oldDebtAmt > 0 && newDebtAmt > 0) {
     const oldCust = (oldTx.customer_name || '').trim().toLowerCase();
     const newCust = (newTx.customer_name || '').trim().toLowerCase();
     if (oldCust === newCust) {
-      const diff = (newTx.sale_price || 0) - (oldTx.sale_price || 0);
+      const diff = newDebtAmt - oldDebtAmt;
       if (diff > 0) {
         addOrUpdateCustomerDebt(newTx.customer_name, newTx.customer_phone || '', diff);
       } else if (diff < 0) {
         reduceCustomerDebt(newTx.customer_name, Math.abs(diff));
       }
     } else {
-      reduceCustomerDebt(oldTx.customer_name, oldTx.sale_price || 0);
-      addOrUpdateCustomerDebt(newTx.customer_name, newTx.customer_phone || '', newTx.sale_price || 0);
+      reduceCustomerDebt(oldTx.customer_name, oldDebtAmt);
+      addOrUpdateCustomerDebt(newTx.customer_name, newTx.customer_phone || '', newDebtAmt);
     }
-  } else if (oldWasDebt && !newIsDebt) {
-    reduceCustomerDebt(oldTx.customer_name, oldTx.sale_price || 0);
-  } else if (!oldWasDebt && newIsDebt) {
-    addOrUpdateCustomerDebt(newTx.customer_name, newTx.customer_phone || '', newTx.sale_price || 0);
+  } else if (oldDebtAmt > 0 && newDebtAmt === 0) {
+    reduceCustomerDebt(oldTx.customer_name, oldDebtAmt);
+  } else if (oldDebtAmt === 0 && newDebtAmt > 0) {
+    addOrUpdateCustomerDebt(newTx.customer_name, newTx.customer_phone || '', newDebtAmt);
   }
 
   const oldWasPay = oldTx.type === 'DEBT_PAYMENT';
@@ -683,8 +786,9 @@ export function deleteTransaction(id) {
 
   if (tx) {
     if (tx.type === 'SALE') {
-      if (tx.payment_method === 'DEBT' && tx.customer_name) {
-        reduceCustomerDebt(tx.customer_name, tx.sale_price || 0);
+      const debtAmt = getTransactionDebtAmount(tx);
+      if (debtAmt > 0 && tx.customer_name) {
+        reduceCustomerDebt(tx.customer_name, debtAmt);
       }
       if (tx.item_name) {
         restoreStock(tx.item_name, tx.quantity || 1);
@@ -848,11 +952,13 @@ export function payDebt(customerId, amount, note = '') {
   const customer = customers.find((c) => c.id === customerId);
 
   if (customer && customer.total_debt > 0) {
-    const parsedAmount = Math.max(0, parseInt(amount, 10) || 0);
+    const parsedAmount = Math.max(0, roundMoney(amount));
     const actualPay = Math.min(customer.total_debt, parsedAmount);
     if (actualPay <= 0) return null;
 
+    const changeAmount = Math.max(0, parsedAmount - actualPay);
     customer.total_debt = Math.max(0, customer.total_debt - actualPay);
+    customer.last_change_amount = changeAmount;
     customer.updated_at = new Date().toISOString();
     saveCustomers(customers);
     pushCustomerToCloud(customer);
@@ -985,6 +1091,10 @@ export function settleAllPendingCodOrders() {
 // STATISTICS & BÁO CÁO DÒNG TIỀN (CASH FLOW)
 // ============================================
 
+function isInventoryPurchaseExpense(tx) {
+  return tx && tx.type === 'EXPENSE' && (tx.item_name || '').trim().toLowerCase() === 'nhập hàng';
+}
+
 export function getMonthlyStats(year, month) {
   const transactions = getTransactions();
 
@@ -997,7 +1107,7 @@ export function getMonthlyStats(year, month) {
     const price = Number(tx.sale_price) || 0;
     if (tx.type === 'DEBT_PAYMENT') return sum + price;
     if (tx.type === 'SALE') {
-      if (tx.payment_method === 'CASH_TRANSFER') return sum + price;
+      if (tx.payment_method === 'CASH_TRANSFER') return sum + getTransactionCashCollected(tx);
       if (tx.payment_method === 'COD' && tx.is_cod_received) return sum + price;
     }
     return sum;
@@ -1011,6 +1121,11 @@ export function getMonthlyStats(year, month) {
     return sum;
   }, 0);
 
+  const netMerchandiseRevenue = monthTxs.reduce((sum, tx) => {
+    if (tx.type === 'SALE') return sum + getNetMerchandiseRevenue(tx);
+    return sum;
+  }, 0);
+
   const totalCost = monthTxs.reduce((sum, tx) => {
     if (tx.type === 'SALE') return sum + (Number(tx.cost_price) || 0);
     return sum;
@@ -1021,15 +1136,28 @@ export function getMonthlyStats(year, month) {
     return sum;
   }, 0);
 
-  const profit = totalRevenue - totalCost - totalExpense;
+  // Nếu đã có giá vốn từng đơn (totalCost > 0), không trừ đúp khoản chi "Nhập hàng" lần thứ 2 vào lợi nhuận
+  const operatingExpense =
+    totalCost > 0
+      ? monthTxs.reduce((sum, tx) => {
+          if (tx.type === 'EXPENSE' && !isInventoryPurchaseExpense(tx)) {
+            return sum + (Number(tx.sale_price) || 0);
+          }
+          return sum;
+        }, 0)
+      : totalExpense;
+
+  const profit = netMerchandiseRevenue - totalCost - operatingExpense;
 
   return {
     actualIncome,
     totalDebt,
     profit,
     totalRevenue,
+    netMerchandiseRevenue,
     totalCost,
     totalExpense,
+    operatingExpense,
     transactionCount: monthTxs.filter((t) => t.type === 'SALE').length,
   };
 }
@@ -1049,6 +1177,7 @@ export function getDetailedCashFlowReport(year, month) {
   let pendingCodAmount = 0;
   let totalCostOfGoods = 0;
   let totalRevenue = 0;
+  let netMerchandiseRevenue = 0;
   let totalExpense = 0;
 
   const expensesByCategory = {
@@ -1074,12 +1203,16 @@ export function getDetailedCashFlowReport(year, month) {
 
     if (tx.type === 'SALE') {
       totalRevenue += saleAmt;
+      netMerchandiseRevenue += getNetMerchandiseRevenue(tx);
       totalCostOfGoods += costAmt;
       if (dailyData[day]) dailyData[day].revenue += saleAmt;
 
       if (tx.payment_method === 'CASH_TRANSFER') {
-        cashSaleIncome += saleAmt;
-        if (dailyData[day]) dailyData[day].income += saleAmt;
+        const cashCollected = getTransactionCashCollected(tx);
+        const partialDebt = getTransactionDebtAmount(tx);
+        cashSaleIncome += cashCollected;
+        pendingDebtCreated += partialDebt;
+        if (dailyData[day]) dailyData[day].income += cashCollected;
       } else if (tx.payment_method === 'COD') {
         if (tx.is_cod_received) {
           codReceivedIncome += saleAmt;
@@ -1088,7 +1221,7 @@ export function getDetailedCashFlowReport(year, month) {
           pendingCodAmount += saleAmt;
         }
       } else if (tx.payment_method === 'DEBT') {
-        pendingDebtCreated += saleAmt;
+        pendingDebtCreated += getTransactionDebtAmount(tx);
       }
     } else if (tx.type === 'DEBT_PAYMENT') {
       debtPaymentIncome += saleAmt;
@@ -1107,10 +1240,13 @@ export function getDetailedCashFlowReport(year, month) {
     }
   });
 
+  const operatingExpense =
+    totalCostOfGoods > 0 ? Math.max(0, totalExpense - (expensesByCategory['Nhập hàng'] || 0)) : totalExpense;
+
   const actualCashInflow = cashSaleIncome + codReceivedIncome + debtPaymentIncome;
   const netCashFlow = actualCashInflow - totalExpense;
-  const grossProfit = totalRevenue - totalCostOfGoods;
-  const netProfit = totalRevenue - totalCostOfGoods - totalExpense;
+  const grossProfit = netMerchandiseRevenue - totalCostOfGoods;
+  const netProfit = grossProfit - operatingExpense;
 
   const allCustomers = getCustomers();
   const totalCustomerDebt = allCustomers.reduce((sum, c) => sum + (Number(c.total_debt) || 0), 0);
@@ -1181,23 +1317,96 @@ export function exportDatabaseToJson() {
 }
 
 /**
- * Nhập và phục hồi cơ sở dữ liệu từ file JSON
+ * Chống lỗ hổng CSV Formula Injection (CWE-1236)
+ * Ngăn chặn Microsoft Excel / Google Sheets tự động thực thi công thức khi ô bắt đầu bằng =, +, -, @, \t, \r
+ */
+export function sanitizeCsvField(value) {
+  if (value === null || value === undefined) return '""';
+  const str = String(value);
+  const formulaChars = ['=', '+', '-', '@', '\t', '\r'];
+  const safeStr = formulaChars.includes(str.charAt(0)) ? `'${str}` : str;
+  return `"${safeStr.replace(/"/g, '""')}"`;
+}
+
+/**
+ * Nhập và phục hồi cơ sở dữ liệu từ file JSON (kèm kiểm định Schema và làm sạch dữ liệu)
  */
 export async function importDatabaseFromJson(jsonContent) {
   try {
     const data = typeof jsonContent === 'string' ? JSON.parse(jsonContent) : jsonContent;
-    if (!data || typeof data !== 'object') {
-      throw new Error('Định dạng file không hợp lệ');
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      throw new Error('Định dạng file không hợp lệ: Dữ liệu sao lưu phải là một JSON Object.');
     }
 
     if (Array.isArray(data.transactions)) {
-      saveTransactions(data.transactions);
+      const sanitizedTxs = data.transactions
+        .filter((t) => t && typeof t === 'object' && !Array.isArray(t))
+        .map((t) => {
+          const type = ['SALE', 'EXPENSE', 'DEBT_PAYMENT'].includes(t.type) ? t.type : 'SALE';
+          const payment_method = ['CASH_TRANSFER', 'DEBT', 'COD'].includes(t.payment_method)
+            ? t.payment_method
+            : 'CASH_TRANSFER';
+          return {
+            id: String(t.id || generateId()).slice(0, 64),
+            type,
+            item_name: String(t.item_name || '').slice(0, 200),
+            sale_price: Math.max(0, Number(t.sale_price) || 0),
+            cost_price: Math.max(0, Number(t.cost_price) || 0),
+            payment_method,
+            customer_name: String(t.customer_name || '').slice(0, 100),
+            customer_phone: String(t.customer_phone || '').slice(0, 30),
+            shipping_address: String(t.shipping_address || '').slice(0, 300),
+            tracking_code: String(t.tracking_code || '').slice(0, 100),
+            shipping_fee: Math.max(0, Number(t.shipping_fee) || 0),
+            is_cod_received: Boolean(t.is_cod_received),
+            quantity: Math.max(1, Number(t.quantity) || 1),
+            created_at:
+              typeof t.created_at === 'string' && !isNaN(Date.parse(t.created_at))
+                ? t.created_at
+                : new Date().toISOString(),
+          };
+        });
+      saveTransactions(sanitizedTxs);
     }
+
     if (Array.isArray(data.customers)) {
-      saveCustomers(data.customers);
+      const sanitizedCusts = data.customers
+        .filter((c) => c && typeof c === 'object' && !Array.isArray(c) && c.name)
+        .map((c) => ({
+          id: String(c.id || generateId()).slice(0, 64),
+          name: String(c.name).trim().slice(0, 100),
+          phone: String(c.phone || '').trim().slice(0, 30),
+          total_debt: Math.max(0, roundMoney(c.total_debt)),
+          created_at:
+            typeof c.created_at === 'string' && !isNaN(Date.parse(c.created_at))
+              ? c.created_at
+              : new Date().toISOString(),
+          updated_at:
+            typeof c.updated_at === 'string' && !isNaN(Date.parse(c.updated_at))
+              ? c.updated_at
+              : new Date().toISOString(),
+        }));
+      saveCustomers(sanitizedCusts);
     }
+
     if (Array.isArray(data.items)) {
-      saveItems(data.items);
+      const sanitizedItems = data.items
+        .filter((i) => i && typeof i === 'object' && !Array.isArray(i) && i.name)
+        .map((i) => {
+          const rawStock = i.stock !== undefined && i.stock !== null && i.stock !== '' ? Number(i.stock) : null;
+          return {
+            id: String(i.id || generateId()).slice(0, 64),
+            name: String(i.name).trim().slice(0, 100),
+            default_price: Math.max(0, roundMoney(i.default_price)),
+            default_cost: Math.max(0, roundMoney(i.default_cost)),
+            stock: rawStock !== null && isFinite(rawStock) ? Math.max(0, Math.round(rawStock * 1000) / 1000) : null,
+            created_at:
+              typeof i.created_at === 'string' && !isNaN(Date.parse(i.created_at))
+                ? i.created_at
+                : new Date().toISOString(),
+          };
+        });
+      saveItems(sanitizedItems);
     }
 
     if (currentUser) {
@@ -1253,21 +1462,21 @@ export function exportTransactionsCsv(year, month) {
   };
 
   const rows = transactions.map((t) => [
-    t.id,
-    formatDate(t.created_at),
-    typeLabels[t.type] || t.type,
-    `"${(t.item_name || '').replace(/"/g, '""')}"`,
+    sanitizeCsvField(t.id),
+    sanitizeCsvField(formatDate(t.created_at)),
+    sanitizeCsvField(typeLabels[t.type] || t.type),
+    sanitizeCsvField(t.item_name || ''),
     t.sale_price || 0,
     t.cost_price || 0,
-    paymentLabels[t.payment_method] || t.payment_method,
-    `"${(t.customer_name || '').replace(/"/g, '""')}"`,
-    `"${(t.customer_phone || '').replace(/"/g, '""')}"`,
-    `"${(t.shipping_address || '').replace(/"/g, '""')}"`,
-    `"${(t.tracking_code || '').replace(/"/g, '""')}"`,
-    t.payment_method === 'COD' ? (t.is_cod_received ? 'Đã thu tiền' : 'Chờ thu tiền') : '-',
+    sanitizeCsvField(paymentLabels[t.payment_method] || t.payment_method),
+    sanitizeCsvField(t.customer_name || ''),
+    sanitizeCsvField(t.customer_phone || ''),
+    sanitizeCsvField(t.shipping_address || ''),
+    sanitizeCsvField(t.tracking_code || ''),
+    sanitizeCsvField(t.payment_method === 'COD' ? (t.is_cod_received ? 'Đã thu tiền' : 'Chờ thu tiền') : '-'),
   ]);
 
-  const csvContent = '\uFEFF' + [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+  const csvContent = '\uFEFF' + [headers.map(sanitizeCsvField).join(','), ...rows.map((r) => r.join(','))].join('\n');
   return csvContent;
 }
 
@@ -1313,9 +1522,13 @@ export function getRevenueReportData(period = 'today') {
   let totalActualIncome = 0;
   let totalCostAndExpense = 0;
   let totalDebt = 0;
+  let totalDebtPaidInPeriod = 0;
+  let totalPendingCod = 0;
   let totalRevenue = 0;
+  let netMerchandiseRevenue = 0;
   let totalCostOfGoods = 0;
   let totalExpense = 0;
+  let inventoryPurchaseExpense = 0;
   let totalQuantity = 0;
   let orderCount = 0;
 
@@ -1333,28 +1546,35 @@ export function getRevenueReportData(period = 'today') {
       orderCount += 1;
       totalQuantity += qty;
       totalRevenue += price;
+      const netSaleRev = getNetMerchandiseRevenue(tx);
+      netMerchandiseRevenue += netSaleRev;
       totalCostOfGoods += cost;
 
       if (tx.payment_method === 'CASH_TRANSFER') {
-        actualIncome = price;
+        actualIncome = getTransactionCashCollected(tx);
+        debt = getTransactionDebtAmount(tx);
       } else if (tx.payment_method === 'COD') {
         if (tx.is_cod_received) {
           actualIncome = price;
         } else {
-          debt = price;
+          totalPendingCod += price;
         }
       } else if (tx.payment_method === 'DEBT') {
-        debt = price;
+        debt = getTransactionDebtAmount(tx);
       }
 
       expense = cost;
-      profit = price - cost;
+      profit = netSaleRev - cost;
     } else if (tx.type === 'EXPENSE') {
       expense = price;
       totalExpense += price;
+      if (isInventoryPurchaseExpense(tx)) {
+        inventoryPurchaseExpense += price;
+      }
       profit = -price;
     } else if (tx.type === 'DEBT_PAYMENT') {
       actualIncome = price;
+      totalDebtPaidInPeriod += price;
       profit = 0;
     }
 
@@ -1372,7 +1592,10 @@ export function getRevenueReportData(period = 'today') {
     };
   });
 
-  const netProfit = totalRevenue - totalCostOfGoods - totalExpense;
+  const operatingExpense =
+    totalCostOfGoods > 0 ? Math.max(0, totalExpense - inventoryPurchaseExpense) : totalExpense;
+  const netProfit = netMerchandiseRevenue - totalCostOfGoods - operatingExpense;
+  const remainingPeriodDebt = Math.max(0, totalDebt - totalDebtPaidInPeriod);
 
   return {
     transactions: rows,
@@ -1384,8 +1607,11 @@ export function getRevenueReportData(period = 'today') {
       costAndExpense: totalCostAndExpense,
       costOfGoods: totalCostOfGoods,
       expense: totalExpense,
-      debt: totalDebt,
+      operatingExpense,
+      debt: remainingPeriodDebt,
+      pendingCod: totalPendingCod,
       revenue: totalRevenue,
+      netMerchandiseRevenue,
       profit: netProfit,
     },
   };
@@ -1425,21 +1651,21 @@ export function exportRevenueReportCsv(period = 'today', shopName = 'Cửa hàng
   };
 
   const rows = transactions.map((t) => [
-    `"${formatDate(t.created_at)}"`,
-    `"${(t.item_name || (t.type === 'EXPENSE' ? 'Chi tiền' : 'Giao dịch')).replace(/"/g, '""')}"`,
+    sanitizeCsvField(formatDate(t.created_at)),
+    sanitizeCsvField(t.item_name || (t.type === 'EXPENSE' ? 'Chi tiền' : 'Giao dịch')),
     t.computedQuantity,
     t.computedActualIncome,
     t.computedExpense,
     t.computedDebt,
     t.computedProfit,
-    paymentLabels[t.payment_method] || (t.type === 'EXPENSE' ? 'Chi tiền' : (t.type === 'DEBT_PAYMENT' ? 'Thu nợ' : '-')),
-    `"${(t.customer_name || '').replace(/"/g, '""')}"`,
-    `"${(t.tracking_code || t.note || '').replace(/"/g, '""')}"`,
+    sanitizeCsvField(paymentLabels[t.payment_method] || (t.type === 'EXPENSE' ? 'Chi tiền' : (t.type === 'DEBT_PAYMENT' ? 'Thu nợ' : '-'))),
+    sanitizeCsvField(t.customer_name || ''),
+    sanitizeCsvField(t.tracking_code || t.note || ''),
   ]);
 
   const summaryRow = [
-    `"TỔNG CỘNG (${periodLabel})"`,
-    `"${totals.orderCount} đơn hàng"`,
+    sanitizeCsvField(`TỔNG CỘNG (${periodLabel})`),
+    sanitizeCsvField(`${totals.orderCount} đơn hàng`),
     totals.totalQuantity,
     totals.actualIncome,
     totals.costAndExpense,
@@ -1451,18 +1677,18 @@ export function exportRevenueReportCsv(period = 'today', shopName = 'Cửa hàng
   ];
 
   const metaRows = [
-    `"BÁO CÁO DOANH THU & KẾT QUẢ KINH DOANH"`,
-    `"Cửa hàng: ${shopName}"`,
-    `"Kỳ báo cáo: ${periodLabel}"`,
-    `"Ngày xuất: ${formatDate(new Date().toISOString())}"`,
-    `""`,
+    sanitizeCsvField('BÁO CÁO DOANH THU & KẾT QUẢ KINH DOANH'),
+    sanitizeCsvField(`Cửa hàng: ${shopName}`),
+    sanitizeCsvField(`Kỳ báo cáo: ${periodLabel}`),
+    sanitizeCsvField(`Ngày xuất: ${formatDate(new Date().toISOString())}`),
+    '""',
   ];
 
   const csvContent =
     '\uFEFF' +
     metaRows.join('\n') +
     '\n' +
-    headers.join(',') +
+    headers.map(sanitizeCsvField).join(',') +
     '\n' +
     rows.map((r) => r.join(',')).join('\n') +
     '\n' +
@@ -1475,13 +1701,23 @@ export function exportRevenueReportCsv(period = 'today', shopName = 'Cửa hàng
 // Format helpers
 // ============================================
 
+export function formatFullMoney(amount) {
+  if (amount === null || amount === undefined || amount === '') return '0đ';
+  const num = Number(amount);
+  if (isNaN(num)) return '0đ';
+  return new Intl.NumberFormat('vi-VN').format(num) + 'đ';
+}
+
 export function formatMoney(amount) {
   if (amount === null || amount === undefined || amount === '') return '0đ';
   const num = Number(amount);
   if (isNaN(num)) return '0đ';
   const absAmount = Math.abs(num);
   if (absAmount >= 1000000) {
-    return (num / 1000000).toFixed(1).replace(/\.0$/, '') + 'tr';
+    const millions = num / 1000000;
+    // Giữ tối đa 2 chữ số thập phân nếu có số lẻ hàng chục nghìn (ví dụ 2.84tr thay vì bị làm tròn cụt thành 2.8tr)
+    const formatted = Number(millions.toFixed(2)).toString();
+    return formatted + 'tr';
   }
   return new Intl.NumberFormat('vi-VN').format(num) + 'đ';
 }
@@ -1576,7 +1812,7 @@ export function getWeekdayActivitySummary({ year, month, weekdayFilter = null } 
     group.transactions.push(tx);
     const amount = Number(tx.sale_price) || 0;
 
-    if (tx.type === 'SALE' || tx.type === 'DEBT_PAYMENT') {
+    if (tx.type === 'SALE') {
       group.totalSales += amount;
       group.salesList.push({
         id: tx.id,
@@ -1585,6 +1821,17 @@ export function getWeekdayActivitySummary({ year, month, weekdayFilter = null } 
         amount,
         customer_name: tx.customer_name || '',
         payment_method: tx.payment_method || 'CASH_TRANSFER',
+        type: tx.type
+      });
+    } else if (tx.type === 'DEBT_PAYMENT') {
+      group.totalDebtCollected = (group.totalDebtCollected || 0) + amount;
+      group.salesList.push({
+        id: tx.id,
+        item_name: tx.item_name || 'Thu nợ',
+        quantity: 1,
+        amount,
+        customer_name: tx.customer_name || '',
+        payment_method: 'DEBT_PAYMENT',
         type: tx.type
       });
     } else if (tx.type === 'EXPENSE') {

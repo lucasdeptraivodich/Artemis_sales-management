@@ -427,7 +427,7 @@ export class EcommerceDatabase {
       item_name,
       amount = 0,
       cost_price = 0,
-      quantity = 1,
+      quantity,
       customer_name = '',
       payment_method = 'CASH_TRANSFER',
       ui_target = 'home',
@@ -596,18 +596,25 @@ export class EcommerceDatabase {
 
     if (operation === 'record_sale') {
       const saleName = (item_name || 'Đơn bán hàng').trim();
-      const saleAmount = Math.max(0, Number(amount) || 0);
+      const cleanQty = Math.max(1, Number(quantity) || 1);
+      const matchedItem = (getItems() || []).find(
+        (i) => i.name !== 'Khác...' && (i.name || '').trim().toLowerCase() === saleName.toLowerCase()
+      );
+      const rawAmount = Math.max(0, Number(amount) || 0);
+      const saleAmount = rawAmount > 0 ? rawAmount : (matchedItem?.default_price > 0 ? matchedItem.default_price * cleanQty : 0);
       if (saleAmount <= 0) {
         throw new Error('Vui lòng cho biết giá tiền bán hàng (ví dụ: "Ghi bán Áo thun 250k").');
       }
+      const rawCost = Math.max(0, Number(cost_price) || 0);
+      const finalCost = rawCost > 0 ? rawCost : (matchedItem?.default_cost > 0 ? matchedItem.default_cost * cleanQty : 0);
       const isDebt = payment_method === 'DEBT';
       const finalCust = customer_name && customer_name.trim() ? customer_name.trim() : (isDebt ? 'Khách nợ' : 'Khách lẻ');
       const tx = addTransaction({
         type: 'SALE',
-        item_name: saleName,
+        item_name: matchedItem ? matchedItem.name : saleName,
         sale_price: saleAmount,
-        cost_price: Math.max(0, Number(cost_price) || 0),
-        quantity: Math.max(1, Number(quantity) || 1),
+        cost_price: finalCost,
+        quantity: cleanQty,
         payment_method: payment_method || 'CASH_TRANSFER',
         customer_name: finalCust,
         created_at: created_at || new Date().toISOString()

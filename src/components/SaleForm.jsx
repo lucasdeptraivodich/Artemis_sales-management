@@ -42,10 +42,22 @@ export default function SaleForm({ onClose, onComplete, initialData = null }) {
   const isEditing = Boolean(initialData?.id);
 
   const initQty = initialData?.quantity ? cleanQuantity(initialData.quantity, 1) : 1;
+  const initBaseSubtotal =
+    initialData?.subtotal !== undefined
+      ? Math.max(0, roundMoney(initialData.subtotal))
+      : initialData?.sale_price !== undefined
+      ? Math.max(
+          0,
+          roundMoney(initialData.sale_price) -
+            roundMoney(initialData.shipping_fee) -
+            roundMoney(initialData.tax_amount) +
+            roundMoney(initialData.discount_amount)
+        )
+      : 0;
   const initSalePrice = initialData?.unit_price !== undefined
     ? String(initialData.unit_price)
     : initialData?.sale_price !== undefined
-    ? String(initQty > 1 ? Math.round(initialData.sale_price / initQty) : initialData.sale_price)
+    ? String(initQty > 1 ? Math.round(initBaseSubtotal / initQty) : initBaseSubtotal)
     : '';
   const initCostPrice = initialData?.unit_cost !== undefined
     ? String(initialData.unit_cost)
@@ -89,14 +101,12 @@ export default function SaleForm({ onClose, onComplete, initialData = null }) {
 
   const handleNameChange = (val) => {
     setItemName(val);
-    const matched = items.find((i) => i.name.toLowerCase() === val.trim().toLowerCase());
+    const matched = items.find((i) => i.name !== 'Khác...' && i.name.toLowerCase() === val.trim().toLowerCase());
     if (matched) {
-      if (!salePrice && matched.default_price > 0) {
+      if (matched.default_price > 0) {
         setSalePrice(String(matched.default_price));
       }
-      if (!costPrice && matched.default_cost > 0) {
-        setCostPrice(String(matched.default_cost));
-      }
+      setCostPrice(matched.default_cost > 0 ? String(matched.default_cost) : '');
     }
   };
 
@@ -143,14 +153,19 @@ export default function SaleForm({ onClose, onComplete, initialData = null }) {
     discountValue,
     taxRate,
     shippingFee: paymentMethod === 'COD' || shippingFee ? shippingFee : 0,
-    customerPaid: paymentMethod === 'CASH_TRANSFER' ? customerPaid : undefined,
+    customerPaid: paymentMethod === 'CASH_TRANSFER' && customerPaid !== '' ? customerPaid : undefined,
   });
+
+  const hasPartialCashDebt =
+    paymentMethod === 'CASH_TRANSFER' &&
+    customerPaid !== '' &&
+    orderCalculations.remainingDebt > 0;
 
   const isValid =
     itemName.trim().length > 0 &&
     orderCalculations.unitPrice > 0 &&
     orderCalculations.quantity > 0 &&
-    (paymentMethod !== 'DEBT' || customerName.trim().length > 0);
+    ((paymentMethod !== 'DEBT' && !hasPartialCashDebt) || customerName.trim().length > 0);
 
   const handleSubmit = () => {
     if (!isValid) return;
@@ -162,6 +177,7 @@ export default function SaleForm({ onClose, onComplete, initialData = null }) {
       unit_price: orderCalculations.unitPrice,
       unit_cost: orderCalculations.unitCost,
       subtotal: orderCalculations.subtotal,
+      effective_subtotal: orderCalculations.effectiveSubtotal,
       discount_type: discountType,
       discount_value: Number(discountValue) || 0,
       discount_amount: orderCalculations.discountAmount,
@@ -170,8 +186,9 @@ export default function SaleForm({ onClose, onComplete, initialData = null }) {
       shipping_fee: orderCalculations.shippingFee,
       sale_price: orderCalculations.totalAmount, // Tổng thanh toán
       cost_price: orderCalculations.totalCost,
-      customer_paid: orderCalculations.customerPaid,
+      customer_paid: paymentMethod === 'CASH_TRANSFER' && customerPaid !== '' ? orderCalculations.customerPaid : undefined,
       change_amount: orderCalculations.changeAmount,
+      remaining_debt: orderCalculations.remainingDebt,
       payment_method: paymentMethod,
       customer_name: customerName.trim(),
       customer_phone: customerPhone.trim(),
@@ -303,8 +320,8 @@ export default function SaleForm({ onClose, onComplete, initialData = null }) {
                   type="button"
                   onClick={() => {
                     setItemName(item.name);
-                    if (item.default_price > 0) setSalePrice(String(item.default_price));
-                    if (item.default_cost > 0) setCostPrice(String(item.default_cost));
+                    setSalePrice(item.default_price > 0 ? String(item.default_price) : '');
+                    setCostPrice(item.default_cost > 0 ? String(item.default_cost) : '');
                   }}
                   className={`text-[0.72rem] px-2 py-0.5 rounded-lg border transition-all ${
                     itemName.trim().toLowerCase() === item.name.toLowerCase()
@@ -488,7 +505,7 @@ export default function SaleForm({ onClose, onComplete, initialData = null }) {
                     </div>
                   ) : customerPaid && orderCalculations.customerPaid < orderCalculations.totalAmount ? (
                     <div className="p-2 rounded-xl bg-amber-500/15 border border-amber-500/30 text-xs font-bold text-amber-300">
-                      ⚠️ Khách đưa thiếu: {formatCurrencyDisplay(orderCalculations.remainingDebt)}
+                      ⚠️ Khách đưa thiếu: {formatCurrencyDisplay(orderCalculations.remainingDebt)} (Tự động ghi vào Sổ Nợ)
                     </div>
                   ) : null}
                 </div>
@@ -499,8 +516,8 @@ export default function SaleForm({ onClose, onComplete, initialData = null }) {
 
 
 
-        {/* DEBT: Customer info */}
-        {paymentMethod === 'DEBT' && (
+        {/* DEBT or Partial Cash Payment: Customer info */}
+        {(paymentMethod === 'DEBT' || hasPartialCashDebt) && (
           <div className="mb-3 bg-slate-900/60 p-3 rounded-2xl border border-white/5 animate-fadeIn">
             <label className="text-[0.78rem] font-semibold text-slate-300 mb-1.5 block">
               Thông tin khách nợ <span className="text-rose-400">*</span>

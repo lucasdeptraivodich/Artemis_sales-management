@@ -25,6 +25,7 @@ console.warn = (...args) => {
 // Import các hàm từ store
 import {
   formatMoney,
+  formatFullMoney,
   addTransaction,
   updateTransaction,
   deleteTransaction,
@@ -39,7 +40,10 @@ import {
   deductStock,
   restoreStock,
   getItems,
+  getWeekdayActivitySummary,
 } from '../src/store.js';
+
+import { parseVietnameseMoney } from '../src/agent/intentMatcher.js';
 
 import {
   roundMoney,
@@ -501,12 +505,14 @@ describe('TC-MOD-05: Báo cáo Doanh thu theo kỳ (Today / Month / All)', () =>
 // ============================================================
 // SUITE 6: ĐỊNH DẠNG TIỀN TỆ (CURRENCY FORMATTING)
 // ============================================================
-describe('TC-MOD-06: Định dạng Tiền tệ formatMoney', () => {
-  it('TC-06.01: Định dạng rút gọn "...tr" cho số tiền >= 1.000.000đ', () => {
+describe('TC-MOD-06: Định dạng Tiền tệ formatMoney & formatFullMoney', () => {
+  it('TC-06.01: Định dạng rút gọn "...tr" cho số tiền >= 1.000.000đ và giữ số lẻ chục nghìn chính xác', () => {
     assert.equal(formatMoney(1000000), '1tr', '1 triệu rút gọn thành 1tr');
     assert.equal(formatMoney(1500000), '1.5tr', '1.5 triệu rút gọn thành 1.5tr');
     assert.equal(formatMoney(2000000), '2tr', '2 triệu rút gọn thành 2tr');
     assert.equal(formatMoney(10500000), '10.5tr', '10.5 triệu');
+    assert.equal(formatMoney(2840000), '2.84tr', '2.84 triệu giữ số lẻ chục nghìn không bị làm tròn cụt');
+    assert.equal(formatMoney(2600000), '2.6tr', '2.6 triệu');
   });
 
   it('TC-06.02: Định dạng rút gọn cho số âm >= 1.000.000đ', () => {
@@ -526,6 +532,14 @@ describe('TC-MOD-06: Định dạng Tiền tệ formatMoney', () => {
     assert.equal(formatMoney(undefined), '0đ');
     assert.equal(formatMoney(''), '0đ');
     assert.equal(formatMoney('abc'), '0đ');
+  });
+
+  it('TC-06.05: Định dạng đầy đủ formatFullMoney luôn hiển thị chuẩn xác từng đồng', () => {
+    assert.equal(formatFullMoney(2840000), '2.840.000đ');
+    assert.equal(formatFullMoney(2600000), '2.600.000đ');
+    assert.equal(formatFullMoney(240000), '240.000đ');
+    assert.equal(formatFullMoney(0), '0đ');
+    assert.equal(formatFullMoney(null), '0đ');
   });
 });
 
@@ -739,6 +753,106 @@ describe('TC-MOD-09: Quản lý Trừ / Hoàn tồn kho (Inventory)', () => {
     updateTransaction(tx.id, { quantity: 1 });
     const afterDecrease = getItems().find((i) => i.name === item.name);
     assert.equal(afterDecrease.stock, 49);
+  });
+});
+
+// ============================================================
+// SUITE 10: KIỂM THỬ CHỐNG SAI LỆCH LỢI NHUẬN, TRẢ THIẾU & AI TIỀN VIỆT
+// ============================================================
+describe('TC-MOD-10: Chống lệch Lợi nhuận (VAT/Ship/Nhập hàng), Trả thiếu & Đọc tiền tự nhiên', () => {
+  beforeEach(() => resetStore());
+
+  it('TC-10.01: Không tính nhầm Thuế VAT và Phí Ship vào Lợi nhuận kinh doanh', () => {
+    const now = new Date();
+    // Đơn hàng: Tiền hàng 100k, Vốn 60k, VAT 10k, Ship 30k -> Tổng thanh toán 140k
+    addTransaction({
+      type: 'SALE',
+      item_name: 'Hoa tươi',
+      unit_price: 100000,
+      unit_cost: 60000,
+      quantity: 1,
+      tax_amount: 10000,
+      shipping_fee: 30000,
+      sale_price: 140000,
+      cost_price: 60000,
+      payment_method: 'CASH_TRANSFER',
+      created_at: now.toISOString(),
+    });
+
+    const stats = getMonthlyStats(now.getFullYear(), now.getMonth());
+    assert.equal(stats.totalRevenue, 140000, 'Tổng hóa đơn là 140k');
+    assert.equal(stats.profit, 40000, 'Lợi nhuận thực chỉ là 40k (100k tiền hàng - 60k vốn)');
+  });
+
+  it('TC-10.02: Không trừ đúp chi phí "Nhập hàng" khi đơn bán đã có giá vốn (cost_price > 0)', () => {
+    const now = new Date();
+    addTransaction({
+      type: 'EXPENSE',
+      item_name: 'Nhập hàng',
+      sale_price: 5000000,
+      created_at: now.toISOString(),
+    });
+    addTransaction({
+      type: 'SALE',
+      item_name: 'Vòng tay đá',
+      sale_price: 200000,
+      cost_price: 100000,
+      payment_method: 'CASH_TRANSFER',
+      created_at: now.toISOString(),
+    });
+
+    const stats = getMonthlyStats(now.getFullYear(), now.getMonth());
+    assert.equal(stats.profit, 100000, 'Lợi nhuận đơn bán 200k vốn 100k phải là +100k, không bị trừ đúp 5tr nhập kho');
+  });
+
+  it('TC-10.03: Khách trả thiếu tiền mặt (customer_paid < sale_price) tự động ghi phần thiếu vào Sổ Nợ & Thực thu chuẩn', () => {
+    const now = new Date();
+    addTransaction({
+      type: 'SALE',
+      item_name: 'Dây chuyền bạc',
+      sale_price: 500000,
+      cost_price: 250000,
+      customer_paid: 300000,
+      payment_method: 'CASH_TRANSFER',
+      customer_name: 'Cô Hoa',
+      created_at: now.toISOString(),
+    });
+
+    const stats = getMonthlyStats(now.getFullYear(), now.getMonth());
+    assert.equal(stats.actualIncome, 300000, 'Thực thu vào két chỉ cộng 300k khách thực đưa');
+    const hoa = getCustomers().find((c) => c.name === 'Cô Hoa');
+    assert.ok(hoa, 'Tự động tạo khách nợ Cô Hoa');
+    assert.equal(hoa.total_debt, 200000, 'Phần thiếu 200k được ghi vào Sổ Nợ');
+  });
+
+  it('TC-10.04: Bảng theo Thứ không cộng đúp giao dịch Thu nợ (DEBT_PAYMENT) vào Doanh số bán hàng', () => {
+    const monday = new Date(2026, 10, 2, 10, 0, 0); // Thứ Hai 02/11/2026
+    const cust = addCustomer({ name: 'Chị Hạnh', total_debt: 0 });
+    addTransaction({
+      type: 'SALE',
+      item_name: 'Nhẫn vàng',
+      sale_price: 500000,
+      payment_method: 'DEBT',
+      customer_name: 'Chị Hạnh',
+      created_at: monday.toISOString(),
+    });
+    payDebt(cust.id, 500000);
+
+    const groups = getWeekdayActivitySummary({ year: 2026, month: 10 });
+    const monGroup = groups.find((g) => g.displayDate === '02/11/2026');
+    assert.ok(monGroup);
+    assert.equal(monGroup.totalSales, 500000, 'Doanh số bán ngày Thứ Hai chỉ tính 500k của đơn bán');
+  });
+
+  it('TC-10.05: Hàm parseVietnameseMoney đọc chuẩn cách nói tiền của mẹ (1tr5, 1 triệu rưỡi, 2 trăm, không nhầm 2 trâm cài tóc)', () => {
+    assert.equal(parseVietnameseMoney('bán dây chuyền 1tr5'), 1500000);
+    assert.equal(parseVietnameseMoney('bán nhẫn 1 triệu 5'), 1500000);
+    assert.equal(parseVietnameseMoney('bán vòng 1 triệu rưỡi'), 1500000);
+    assert.equal(parseVietnameseMoney('bán lắc 2tr3'), 2300000);
+    assert.equal(parseVietnameseMoney('bán bông tai 2 trăm'), 200000);
+    assert.equal(parseVietnameseMoney('bán kẹp 5 chục'), 50000);
+    assert.equal(parseVietnameseMoney('bán 2 trâm cài tóc 60k'), 60000);
+    assert.equal(parseVietnameseMoney('bán 2 món mỹ phẩm 250k'), 250000);
   });
 });
 

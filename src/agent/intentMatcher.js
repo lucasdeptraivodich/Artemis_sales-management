@@ -29,13 +29,13 @@ export function buildLiveStoreContext() {
   try {
     const todayStats = getRevenueReportData('today')?.totals || {};
     const monthStats = getRevenueReportData('month')?.totals || {};
-    const debtInfo = getDebtSummary() || { totalDebt: 0, owingCount: 0, customers: [] };
+    const debtInfo = getDebtSummary() || { totalDebt: 0, owingCount: 0, owingCustomers: [] };
     const items = getItems() || [];
     const fmt = (n) => new Intl.NumberFormat('vi-VN').format(Math.round(Number(n) || 0)) + 'đ';
 
-    const owingNames = (debtInfo.customers || [])
+    const owingNames = (debtInfo.owingCustomers || debtInfo.customers || [])
       .slice(0, 5)
-      .map((c) => `${c.name} (${fmt(c.totalDebt)})`)
+      .map((c) => `${c.name} (${fmt(c.total_debt ?? c.totalDebt)})`)
       .join(', ');
 
     return (
@@ -53,23 +53,78 @@ export function buildLiveStoreContext() {
 export function parseVietnameseMoney(text) {
   if (!text) return 0;
   const clean = text.toLowerCase().normalize('NFC');
+  const END_BOUNDARY = '(?=\\s|[.,!?;:)]|$)';
 
-  // 1. Số kèm chữ triệu / tr / m / củ: ví dụ: 6 triệu, 6.5tr, 6m, 6 củ
-  const trMatch = clean.match(/(\d+(?:[.,]\d+)?)\s*(?:triệu|trieu|tr|m|củ|cu)\b/i);
+  // 0. Cụm đặc biệt: "nửa triệu" / "nửa củ" (500k), "nửa lít" / "nửa xị" / "nửa trăm" (50k)
+  if (new RegExp(`(?:^|\\s)nửa\\s*(?:triệu|trieu|tr|củ|cu)${END_BOUNDARY}`, 'iu').test(clean)) {
+    return 500000;
+  }
+  if (new RegExp(`(?:^|\\s)nửa\\s*(?:lít|lit|xị|xi|trăm|tram)${END_BOUNDARY}`, 'iu').test(clean)) {
+    return 50000;
+  }
+
+  // 1A. Dạng ghép triệu + rưỡi: "1 triệu rưỡi", "1tr rưỡi", "2 củ rưỡi" -> 1.500.000, 2.500.000
+  const trRuoiMatch = clean.match(
+    new RegExp(`(\\d+)\\s*(?:triệu|trieu|tr|m|củ|cu)\\s*(?:rưỡi|ruoi)${END_BOUNDARY}`, 'iu')
+  );
+  if (trRuoiMatch) {
+    return parseInt(trRuoiMatch[1], 10) * 1000000 + 500000;
+  }
+
+  // 1B. Dạng ghép triệu + phần lẻ nghìn: "1tr5", "1tr500", "2tr3", "1 triệu 5", "1 triệu 500k", "1 củ 2"
+  const trCompoundMatch = clean.match(
+    new RegExp(
+      `(\\d+)\\s*(?:triệu|trieu|tr|củ|cu)\\s*(\\d{1,3})\\s*(?:nghìn|nghin|ngàn|ngan|k|trăm|tram)?${END_BOUNDARY}`,
+      'iu'
+    )
+  );
+  if (trCompoundMatch) {
+    const millions = parseInt(trCompoundMatch[1], 10) * 1000000;
+    const subStr = trCompoundMatch[2];
+    const subVal = parseInt(subStr, 10);
+    const subAmount =
+      subStr.length === 1 ? subVal * 100000 : subStr.length === 2 ? subVal * 10000 : subVal * 1000;
+    return millions + subAmount;
+  }
+
+  // 1C. Số kèm chữ triệu / tr / m / củ (dùng END_BOUNDARY để không bắt nhầm "2 trăm", "2 trâm", "2 món")
+  const trMatch = clean.match(
+    new RegExp(`(\\d+(?:[.,]\\d+)?)\\s*(?:triệu|trieu|tr|m|củ|cu)${END_BOUNDARY}`, 'iu')
+  );
   if (trMatch) {
     return Math.round(parseFloat(trMatch[1].replace(',', '.')) * 1000000);
   }
 
-  // 2. Số kèm chữ nghìn / ngàn / k: ví dụ: 500k, 250 nghìn, 150 ngàn
-  const kMatch = clean.match(/(\d+(?:[.,]\d+)?)\s*(?:nghìn|nghin|ngàn|ngan|k)\b/i);
+  // 2A. Dạng trăm/xị/lít + rưỡi: "1 trăm rưỡi", "1 xị rưỡi", "1 lít rưỡi" -> 150.000
+  const tramRuoiMatch = clean.match(
+    new RegExp(`(\\d+)\\s*(?:trăm|tram|xị|xi|lít|lit)\\s*(?:rưỡi|ruoi)${END_BOUNDARY}`, 'iu')
+  );
+  if (tramRuoiMatch) {
+    return parseInt(tramRuoiMatch[1], 10) * 100000 + 50000;
+  }
+
+  // 2B. Số kèm chữ nghìn / ngàn / k / cành (hỗ trợ cả "50k rưỡi" -> 50.500 hoặc giữ nguyên nghìn)
+  const kMatch = clean.match(
+    new RegExp(`(\\d+(?:[.,]\\d+)?)\\s*(?:nghìn|nghin|ngàn|ngan|k|cành|canh)(?:\\s*(?:rưỡi|ruoi))?${END_BOUNDARY}`, 'iu')
+  );
   if (kMatch) {
     return Math.round(parseFloat(kMatch[1].replace(',', '.')) * 1000);
   }
 
-  // 3. Tiếng lóng "xị" (1 xị = 100.000đ)
-  const xiMatch = clean.match(/(\d+(?:[.,]\d+)?)\s*(?:xị|xi)\b/i);
-  if (xiMatch) {
-    return Math.round(parseFloat(xiMatch[1].replace(',', '.')) * 100000);
+  // 3A. Tiếng lóng "xị" / "lít" / "trăm" (1 xị / 1 lít / 1 trăm = 100.000đ, ví dụ: "2 trăm", "3 xị")
+  const xiOrTramMatch = clean.match(
+    new RegExp(`(\\d+(?:[.,]\\d+)?)\\s*(?:xị|xi|lít|lit|trăm(?:\\s*(?:nghìn|nghin|ngàn|ngan|k))?|tram)${END_BOUNDARY}`, 'iu')
+  );
+  if (xiOrTramMatch) {
+    return Math.round(parseFloat(xiOrTramMatch[1].replace(',', '.')) * 100000);
+  }
+
+  // 3B. Dạng "chục" (1 chục = 10.000đ, ví dụ: "5 chục" = 50.000đ)
+  const chucMatch = clean.match(
+    new RegExp(`(\\d+(?:[.,]\\d+)?)\\s*(?:chục|chuc)(?:\\s*(?:nghìn|nghin|ngàn|ngan|k))?${END_BOUNDARY}`, 'iu')
+  );
+  if (chucMatch) {
+    return Math.round(parseFloat(chucMatch[1].replace(',', '.')) * 10000);
   }
 
   // 4. Số viết dạng phân cách hàng nghìn (ví dụ: 6.000.000, 6,000,000, 500.000)
@@ -291,11 +346,18 @@ function extractSaleDetails(text) {
   const amount = parseVietnameseMoney(text);
   const createdAt = parseVietnameseDate(text);
 
+  // Loại bỏ các cụm tiền tệ trước khi dò số lượng để không bắt nhầm "bán 200 nghìn nhẫn" thành quantity = 200
+  const textWithoutMoney = text
+    .replace(/\b\d+\s*(?:triệu|trieu|tr|m|củ|cu)\s*(?:rưỡi|ruoi|\d{1,3}(?:\s*(?:nghìn|nghin|ngàn|ngan|k))?)/giu, ' ')
+    .replace(/\b\d+(?:[.,]\d+)?\s*(?:triệu|trieu|tr|m|củ|cu|nghìn|nghin|ngàn|ngan|k|cành|canh|xị|xi|lít|lit|trăm|tram|chục|chuc|đ|đồng|dong|vnd)(?=\s|[.,!?;:)]|$)/giu, ' ')
+    .replace(/\b\d{1,3}(?:[.,]\d{3})+\b/g, ' ')
+    .replace(/\b\d{4,10}\b/g, ' ');
+
   // 1. Số lượng
   let quantity = 1;
   const qtyMatch =
-    text.match(/(?:bán|đơn|lấy|mua|thêm|lên|nhập)\s+(\d+)\s*(?:cái|chiếc|bộ|đôi|hộp|thỏi|cây|túi|áo|quần|đơn|vé|ly|chén|chai|hũ|tuýp)?\b/i) ||
-    text.match(/\b(\d+)\s*(?:cái|chiếc|bộ|đôi|hộp|thỏi|cây|túi|áo|quần|vé|ly|chai|hũ|tuýp)\b/i);
+    textWithoutMoney.match(/\b(\d+)\s*(?:cái|chiếc|bộ|đôi|hộp|thỏi|cây|túi|áo|quần|vé|ly|chén|chai|hũ|tuýp|món|sản phẩm|sp)(?=\s|[.,!?;:)]|$)/iu) ||
+    textWithoutMoney.match(/(?:bán|lấy|mua|thêm|lên|nhập)\s+(\d{1,3})(?=\s+[a-zà-ỹ])/iu);
   if (qtyMatch && parseInt(qtyMatch[1], 10) > 0) {
     quantity = parseInt(qtyMatch[1], 10);
   }
@@ -319,15 +381,20 @@ function extractSaleDetails(text) {
     .replace(/(?:đã bán|vừa bán|một đơn|1 đơn|đơn hàng|đơn bán|đơn)/gi, '')
     // Bỏ cụm từ giá tiền
     .replace(/(?:trị giá|với giá|giá|tiền|thành tiền)\s*[:\s]*\d+.*$/i, '')
-    // Bỏ số tiền và đơn vị
-    .replace(/\d+(?:[.,]\d+)?\s*(?:triệu|trieu|tr|m|củ|cu|nghìn|nghin|ngàn|ngan|k|xị|xi|đ|đồng|dong|vnd)?\b/gi, '')
+    // Bỏ số tiền ghép (1tr5, 1 triệu rưỡi, nửa triệu...) và đơn vị tiền tệ (dùng lookahead để không cắt mất chữ "trâm", "trà", "món")
+    .replace(/\b(?:nửa|nua)\s*(?:triệu|trieu|tr|củ|cu|lít|lit|xị|xi|trăm|tram)(?=\s|[.,!?;:)]|$)/giu, '')
+    .replace(/\b\d+\s*(?:triệu|trieu|tr|m|củ|cu)\s*(?:rưỡi|ruoi|\d{1,3}(?:\s*(?:nghìn|nghin|ngàn|ngan|k))?)(?=\s|[.,!?;:)]|$)/giu, '')
+    .replace(/\b\d+(?:[.,]\d+)?\s*(?:triệu|trieu|tr|m|củ|cu|nghìn|nghin|ngàn|ngan|k|cành|canh|xị|xi|lít|lit|trăm|tram|chục|chuc|đ|đồng|dong|vnd)(?:\s*(?:rưỡi|ruoi|nghìn|nghin|ngàn|ngan|k))?(?=\s|[.,!?;:)]|$)/giu, '')
     .replace(/\d{1,3}(?:[.,]\d{3})+\b/g, '')
+    .replace(/\b\d{4,10}\b/g, '')
+    // Bỏ số lượng đứng đầu câu (ví dụ "2 trâm cài tóc" -> "trâm cài tóc")
+    .replace(/^\s*\d+\s*(?:cái|chiếc|bộ|đôi|hộp|thỏi|cây|túi)?\s*/i, '')
     // Bỏ cụm khách hàng
     .replace(/(?:cho khách|cho anh|cho chị|cho bác|cho cô|cho chú|cho em|khách hàng|khách|cho)\s+[A-ZÀ-Ỹa-zà-ỹ0-9\s]{2,20}/gi, '')
     // Bỏ phương thức thanh toán
     .replace(/(?:ghi nợ|nợ|ship cod|cod|chuyển khoản|tiền mặt)/gi, '')
-    // Bỏ đơn vị đếm
-    .replace(/(?:cái|chiếc|bộ|đôi|hộp|thỏi|cây|túi)/gi, '')
+    // Bỏ đơn vị đếm đứng rời
+    .replace(/(?:^|\s)(?:cái|chiếc|bộ|đôi|hộp|thỏi|cây|túi)(?=\s|$)/gi, ' ')
     // Dọn dẹp dấu câu thừa
     .replace(/[:,\-\.\/]/g, ' ')
     .replace(/\s+/g, ' ')
@@ -638,12 +705,19 @@ export function simulateLlmToolCalling(lastUserMessage) {
 
   if (isSaleIntent) {
     const sale = extractSaleDetails(text);
+    const matchedItem = (getItems() || []).find(
+      (i) => i.name !== 'Khác...' && (i.name || '').trim().toLowerCase() === (sale.itemName || '').trim().toLowerCase()
+    );
+    const defaultSaleTotal = matchedItem?.default_price > 0 ? matchedItem.default_price * (sale.quantity || 1) : 100000;
+    const defaultCostTotal = matchedItem?.default_cost > 0 ? matchedItem.default_cost * (sale.quantity || 1) : 0;
+
     return {
       name: 'manage_web_store',
       args: {
         operation: 'record_sale',
-        item_name: sale.itemName,
-        amount: sale.amount || 100000,
+        item_name: matchedItem ? matchedItem.name : sale.itemName,
+        amount: sale.amount || defaultSaleTotal,
+        cost_price: defaultCostTotal || undefined,
         quantity: sale.quantity,
         payment_method: sale.paymentMethod,
         customer_name: sale.customerName,

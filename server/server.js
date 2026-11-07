@@ -11,23 +11,114 @@
 
 import express from 'express';
 import cors from 'cors';
+import { createClient } from '@supabase/supabase-js';
 import { processAgentMessage } from '../src/agent/aiAgentEngine.js';
 import { ecommerceDb } from '../src/agent/ecommerceDb.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Middleware
-app.use(cors());
-app.use(express.json());
+// CORS Whitelist Protection
+const DEFAULT_ALLOWED_ORIGINS = [
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'http://localhost:3000',
+  'http://localhost:4173'
+];
+const allowedOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean)
+  : DEFAULT_ALLOWED_ORIGINS;
 
-// Mock Middleware kiểm tra Authorization
-function authMiddleware(req, res, next) {
-  // Trong môi trường production, verify Bearer JWT token ở đây:
-  // const token = req.headers.authorization?.split(' ')[1];
-  // if (!token) return res.status(401).json({ error: 'Unauthorized: Thiếu token xác thực.' });
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin) || process.env.NODE_ENV !== 'production') {
+        return callback(null, true);
+      }
+      return callback(new Error(`CORS blocked: Origin ${origin} is not allowed.`));
+    },
+    credentials: true
+  })
+);
+
+app.use(express.json({ limit: '1mb' }));
+
+// Lightweight in-memory Sliding Window Rate Limiter
+function createRateLimiter({ windowMs = 60 * 1000, maxRequests = 30, message = 'Quá nhiều yêu cầu. Vui lòng thử lại sau.' }) {
+  const requests = new Map();
+
+  const interval = setInterval(() => {
+    const now = Date.now();
+    for (const [key, timestamps] of requests.entries()) {
+      const valid = timestamps.filter((t) => now - t < windowMs);
+      if (valid.length === 0) requests.delete(key);
+      else requests.set(key, valid);
+    }
+  }, 5 * 60 * 1000);
+  interval.unref?.();
+
+  return (req, res, next) => {
+    const key = req.ip || req.headers['x-forwarded-for'] || 'client';
+    const now = Date.now();
+    const timestamps = requests.get(key) || [];
+    const recentTimestamps = timestamps.filter((t) => now - t < windowMs);
+
+    if (recentTimestamps.length >= maxRequests) {
+      return res.status(429).json({
+        error: message,
+        retryAfterSeconds: Math.ceil((recentTimestamps[0] + windowMs - now) / 1000)
+      });
+    }
+
+    recentTimestamps.push(now);
+    requests.set(key, recentTimestamps);
+    next();
+  };
+}
+
+const chatRateLimiter = createRateLimiter({
+  windowMs: 60 * 1000,
+  maxRequests: 30,
+  message: 'Bạn đã gửi quá nhiều yêu cầu AI trong thời gian ngắn. Vui lòng chờ 1 phút trước khi thử lại.'
+});
+
+// Supabase Auth Client
+const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+const supabaseClient = supabaseUrl && supabaseKey ? createClient(supabaseUrl, supabaseKey) : null;
+
+// Middleware kiểm tra Authorization (Hỗ trợ JWT Supabase & Bảo vệ PII)
+async function authMiddleware(req, res, next) {
+  const authHeader = req.headers.authorization;
+  const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
+
+  if (supabaseClient && token) {
+    try {
+      const { data: { user }, error } = await supabaseClient.auth.getUser(token);
+      if (error || !user) {
+        return res.status(401).json({ error: 'Unauthorized: Token xác thực không hợp lệ hoặc đã hết hạn.' });
+      }
+      req.user = {
+        id: user.id,
+        email: user.email,
+        role: user.role || 'authenticated'
+      };
+      return next();
+    } catch (err) {
+      return res.status(401).json({ error: 'Unauthorized: Lỗi xác thực token.', details: err.message });
+    }
+  }
+
+  // Nếu chạy trong production mà không có token: chặn truy cập
+  if (process.env.NODE_ENV === 'production') {
+    if (!token) {
+      return res.status(401).json({ error: 'Unauthorized: Thiếu Bearer Token xác thực.' });
+    }
+  }
+
+  // Môi trường Dev/Test nội bộ: Cung cấp fallback an toàn
   req.user = {
-    id: req.headers['x-user-id'] || 'guest_user_1',
+    id: req.headers['x-user-id'] || 'dev_guest_user',
     role: 'customer'
   };
   next();
@@ -37,12 +128,22 @@ function authMiddleware(req, res, next) {
  * POST /api/agent/chat
  * Luồng: Nhận chat -> Phân tích Intent/Tool Call -> Kiểm tra Nghiệp vụ & HITL -> Phản hồi
  */
-app.post('/api/agent/chat', authMiddleware, async (req, res) => {
+app.post('/api/agent/chat', chatRateLimiter, authMiddleware, async (req, res) => {
   try {
     const { messages, sessionState, apiKey, model } = req.body;
 
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: 'Body phải chứa mảng "messages".' });
+    }
+
+    if (messages.length > 50) {
+      return res.status(400).json({ error: 'Số lượng tin nhắn vượt quá giới hạn cho phép (tối đa 50).' });
+    }
+
+    for (const msg of messages) {
+      if (typeof msg?.content === 'string' && msg.content.length > 10000) {
+        return res.status(400).json({ error: 'Nội dung tin nhắn vượt quá 10,000 ký tự.' });
+      }
     }
 
     const response = await processAgentMessage({
@@ -66,7 +167,7 @@ app.post('/api/agent/chat', authMiddleware, async (req, res) => {
  * POST /api/agent/confirm
  * Human-in-the-loop: Tiếp nhận nút bấm "Xác nhận" hoặc "Hủy bỏ" từ Preview Card
  */
-app.post('/api/agent/confirm', authMiddleware, async (req, res) => {
+app.post('/api/agent/confirm', chatRateLimiter, authMiddleware, async (req, res) => {
   try {
     const { actionId, approved } = req.body;
 
@@ -99,9 +200,9 @@ app.post('/api/agent/confirm', authMiddleware, async (req, res) => {
 
 /**
  * GET /api/agent/orders
- * Tra cứu danh sách đơn hàng mẫu
+ * Tra cứu danh sách đơn hàng (Bảo vệ thông tin cá nhân khách hàng bằng authMiddleware)
  */
-app.get('/api/agent/orders', (req, res) => {
+app.get('/api/agent/orders', authMiddleware, (req, res) => {
   res.json({
     orders: ecommerceDb.getAllOrders()
   });

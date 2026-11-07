@@ -25,14 +25,18 @@ export default function ReportExportModal({ onClose, showToast, user }) {
       minute: '2-digit',
     })}`;
 
+    const codLine = totals.pendingCod > 0 ? `\n🚚 COD chờ thu: ${formatMoney(totals.pendingCod)}` : '';
+
     return `📊 BÁO CÁO DOANH THU (${currentPeriodLabel.toUpperCase()})
 🏪 Cửa hàng: ${shopName}
 ⏰ Xuất lúc: ${timeStr}
 ─────────────────────────
-💰 Tổng thu thực: ${formatMoney(totals.actualIncome)}
-💸 Tổng chi phí: ${formatMoney(totals.costAndExpense)}
-📝 Nợ chưa thu: ${formatMoney(totals.debt)}
-📈 Lợi nhuận: ${totals.profit >= 0 ? '+' : ''}${formatMoney(totals.profit)}
+💰 Tổng doanh thu: ${formatMoney(totals.revenue)}
+💵 Thực thu vào ví: ${formatMoney(totals.actualIncome)}
+🏷️ Giá vốn hàng bán: ${formatMoney(totals.costOfGoods)}
+💸 Chi tiêu phát sinh: ${formatMoney(totals.expense)}
+📝 Nợ chưa thu: ${formatMoney(totals.debt)}${codLine}
+📈 Lợi nhuận ròng: ${totals.profit >= 0 ? '+' : ''}${formatMoney(totals.profit)}
 📦 Tổng đơn hàng: ${totals.orderCount} đơn (${totals.totalQuantity} sản phẩm)
 ─────────────────────────
 (Báo cáo xuất từ ứng dụng quản lý Artemis)`;

@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { getCustomers, getCustomerDebtHistory, payDebt, formatMoney, formatDate } from '../store';
+import { getCustomers, getCustomerDebtHistory, payDebt, formatMoney, formatFullMoney, formatDate } from '../store';
 import {
   IconUsers,
   IconSearch,
@@ -98,9 +98,16 @@ export default function DebtBook({ onRefresh, showToast, onAddCustomer, onEditCu
           </span>
           <p className="text-xs text-rose-300/80 mt-0.5">{owingCount} khách hàng đang nợ</p>
         </div>
-        <span className="text-[1.4rem] font-black text-rose-400">
-          {formatMoney(totalDebt)}
-        </span>
+        <div className="text-right">
+          <span className="text-[1.3rem] sm:text-[1.4rem] font-black text-rose-400 block tracking-tight">
+            {formatFullMoney(totalDebt)}
+          </span>
+          {totalDebt >= 1000000 && (
+            <span className="text-[0.72rem] text-rose-300/80 font-bold block">
+              (~{formatMoney(totalDebt)})
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Search Bar */}
@@ -211,7 +218,7 @@ export default function DebtBook({ onRefresh, showToast, onAddCustomer, onEditCu
                           color: customer.total_debt > 0 ? '#f87171' : '#34d399',
                         }}
                       >
-                        {formatMoney(customer.total_debt)}
+                        {formatFullMoney(customer.total_debt)}
                       </p>
                       <span className="text-[10px] text-slate-500 block">
                         {customer.total_debt > 0 ? 'Còn nợ' : 'Đã trả hết'}
@@ -247,7 +254,7 @@ export default function DebtBook({ onRefresh, showToast, onAddCustomer, onEditCu
                                 color: tx.type === 'DEBT_PAYMENT' ? '#34d399' : '#f87171'
                               }}
                             >
-                              {tx.type === 'DEBT_PAYMENT' ? '-' : '+'}{formatMoney(tx.sale_price)}
+                              {tx.type === 'DEBT_PAYMENT' ? '-' : '+'}{formatFullMoney(tx.sale_price)}
                             </span>
                           </div>
                         ))}

@@ -21,6 +21,7 @@ create table if not exists public.items (
   name text not null,
   default_price bigint default 0,
   default_cost bigint default 0,
+  stock numeric(12, 3) default null,
   created_at timestamp with time zone default timezone('utc'::text, now())
 );
 
@@ -41,8 +42,15 @@ create table if not exists public.transactions (
   user_id uuid references auth.users on delete cascade not null,
   type text not null, -- 'SALE' | 'EXPENSE' | 'DEBT_PAYMENT'
   item_name text not null,
+  quantity numeric(12, 3) default 1,
+  unit_price bigint default 0,
+  unit_cost bigint default 0,
   sale_price bigint default 0,
   cost_price bigint default 0,
+  discount_amount bigint default 0,
+  tax_amount bigint default 0,
+  customer_paid bigint default null,
+  remaining_debt bigint default 0,
   payment_method text default 'CASH_TRANSFER', -- 'CASH_TRANSFER' | 'DEBT' | 'COD'
   customer_name text default '',
   customer_phone text default '',
@@ -72,6 +80,9 @@ create policy "profiles_insert_own" on public.profiles for insert with check (au
 
 drop policy if exists "profiles_update_own" on public.profiles;
 create policy "profiles_update_own" on public.profiles for update using (auth.uid() = id);
+
+drop policy if exists "profiles_delete_own" on public.profiles;
+create policy "profiles_delete_own" on public.profiles for delete using (auth.uid() = id);
 
 -- Policies: items
 drop policy if exists "items_all_own" on public.items;
